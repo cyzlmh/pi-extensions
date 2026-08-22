@@ -1,0 +1,36 @@
+{
+  "name": "pi-provider-status",
+  "version": "0.1.0",
+  "description": "Show remaining quota and balance for LLM providers in pi — /status panel for Kimi Coding, Zhipu ZAI, MiniMax, DeepSeek, OpenRouter, Claude and Codex subscription windows",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "pi-coding-agent",
+    "quota",
+    "usage",
+    "rate-limit",
+    "kimi",
+    "zhipu",
+    "minimax",
+    "deepseek"
+  ],
+  "license": "MIT",
+  "author": "cyzlmh",
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyzlmh/pi-extensions.git",
+    "directory": "pi-provider-status"
+  },
+  "bugs": {
+    "url": "https://github.com/cyzlmh/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-provider-status",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
