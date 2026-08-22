@@ -1,0 +1,34 @@
+{
+  "name": "pi-dev-inspector",
+  "version": "0.1.0",
+  "description": "Developer inspection tools for pi: view the system prompt and inspect API request/response round-trips",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "devtools",
+    "debug",
+    "inspector"
+  ],
+  "license": "MIT",
+  "author": "yzchen",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyzlmh/pi-extensions.git",
+    "directory": "pi-devtools"
+  },
+  "bugs": {
+    "url": "https://github.com/cyzlmh/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-devtools"
+}

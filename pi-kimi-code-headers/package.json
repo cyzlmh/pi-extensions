@@ -1,0 +1,30 @@
+{
+  "name": "pi-kimi-code-headers",
+  "version": "1.1.0",
+  "description": "让 pi 伪装成 Kimi Code 客户端 | Make pi pretend to be Kimi Code — injects device-identity headers so Kimi backend treats pi traffic as Kimi Code traffic.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "kimi",
+    "kimi-code",
+    "moonshot"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyzlmh/pi-extensions.git",
+    "directory": "pi-kimi-code-headers"
+  },
+  "bugs": {
+    "url": "https://github.com/cyzlmh/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-kimi-code-headers"
+}

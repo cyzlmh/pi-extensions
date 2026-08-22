@@ -1,0 +1,33 @@
+{
+  "name": "pi-bg-tasks",
+  "version": "0.1.0",
+  "description": "Lightweight background bash tasks for pi — run_in_background, auto-background at timeout, Ctrl+Shift+B, completion notifications, zero-dependency core",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "pi-coding-agent",
+    "background-tasks",
+    "bash",
+    "shell"
+  ],
+  "license": "MIT",
+  "author": "cyzlmh",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyzlmh/pi-extensions.git",
+    "directory": "pi-bg-tasks"
+  },
+  "bugs": {
+    "url": "https://github.com/cyzlmh/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-bg-tasks"
+}

@@ -1,0 +1,34 @@
+{
+  "name": "pi-fork-pane",
+  "version": "0.1.0",
+  "description": "Split a tmux pane and fork the current pi session into it",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "tmux",
+    "fork",
+    "session"
+  ],
+  "license": "MIT",
+  "author": "yzchen",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyzlmh/pi-extensions.git",
+    "directory": "pi-fork-pane"
+  },
+  "bugs": {
+    "url": "https://github.com/cyzlmh/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-fork-pane"
+}
