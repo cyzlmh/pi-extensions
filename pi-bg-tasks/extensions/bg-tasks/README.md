@@ -50,5 +50,6 @@ The core modules (types/spawn/output/registry/lifecycle/notify) have zero extern
 mkdir -p node_modules/@earendil-works
 ln -sfn "$(npm root -g)/@earendil-works/pi-coding-agent" node_modules/@earendil-works/pi-coding-agent
 ln -sfn "$(npm root -g)/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core" node_modules/@earendil-works/pi-agent-core
+ln -sfn "$(npm root -g)/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui" node_modules/@earendil-works/pi-tui
 ln -sfn "$(npm root -g)/@earendil-works/pi-coding-agent/node_modules/typebox" node_modules/typebox
 ```

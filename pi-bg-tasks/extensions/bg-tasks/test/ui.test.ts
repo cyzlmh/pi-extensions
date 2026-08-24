@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderStatusPill } from "../ui.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { registerUi, renderStatusPill } from "../ui.ts";
 import { add, BgRegistry, createRunningJob, forget } from "../registry.ts";
 import { markTerminal } from "../lifecycle.ts";
 import type { BgJob, UiContext } from "../types.ts";
@@ -32,6 +33,39 @@ function mkRunningJob(reg: BgRegistry, over: Partial<BgJob> = {}): BgJob {
     });
     return add(reg, job);
 }
+
+void describe("task notification renderer", () => {
+    void it("truncates messages to the current terminal width", () => {
+        let renderer:
+            | ((message: unknown, options: unknown, theme: unknown) => { render(width: number): string[] })
+            | undefined;
+        const pi = {
+            registerShortcut() {},
+            registerCommand() {},
+            registerMessageRenderer(_type: string, value: unknown) {
+                renderer = value as typeof renderer;
+            },
+        };
+        registerUi(pi as never, new BgRegistry());
+
+        const component = renderer!(
+            {
+                content: "",
+                details: {
+                    status: "completed",
+                    summary: 'Background command "Launch full translation in background" completed (exit code 0)',
+                },
+            },
+            {},
+            { fg: (_colour: string, text: string) => text }
+        );
+
+        for (const width of [1, 54]) {
+            const [line] = component.render(width);
+            assert.ok(visibleWidth(line) <= width, `width ${width}: ${line}`);
+        }
+    });
+});
 
 void describe("renderStatusPill", () => {
     void it("shows only the running count for backgrounded jobs", () => {

@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { BgRegistry } from "./registry.ts";
 import { isTerminalStatus, type BgJob, type UiContext } from "./types.ts";
 import { readLastLine } from "./output.ts";
@@ -183,7 +184,10 @@ export function registerUi(pi: ExtensionAPI, reg: BgRegistry): void {
                 : details?.status === "failed"
                   ? "error"
                   : "warning";
-        const line = theme.fg(colour, `● ${details?.summary ?? String(message.content)}`);
-        return { render: () => [line], invalidate: () => {} };
+        const text = `● ${details?.summary ?? String(message.content)}`;
+        return {
+            render: (width: number) => [theme.fg(colour, truncateToWidth(text, width))],
+            invalidate: () => {},
+        };
     });
 }
