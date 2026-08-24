@@ -262,6 +262,10 @@ async function runForeground(args: {
         if (race.kind === "backgrounded") {
             if (!handedToBackground) {
                 handedToBackground = true;
+                // Hand-off point: the job now outlives the turn, so it must no
+                // longer keep the process alive (foreground waits rely on the
+                // ref'd handle to survive headless event-loop drains).
+                spawned.proc.unref();
                 promoteToBackground({ reg, pi, ctx, job, exit: spawned.exit, toolCallId });
             }
             const head =
@@ -309,6 +313,8 @@ function spawnBackground(args: {
         cwd: args.cwd,
         logPath,
     });
+    // Background from birth: the job must not keep pi's event loop alive.
+    spawned.proc.unref();
 
     const job = createRunningJob({
         id,

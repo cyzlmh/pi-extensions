@@ -6,7 +6,7 @@
  * the file tail separately (see output.ts).
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { SIGTERM_GRACE_MS, type SpawnExit } from "./types.ts";
@@ -15,13 +15,23 @@ export interface SpawnResult {
     pid: number;
     logPath: string;
     exit: Promise<SpawnExit>;
+    /**
+     * The spawned child handle. Returned REF'D on purpose: a foreground
+     * caller awaiting `exit` must keep the Node event loop alive, otherwise
+     * a headless (print/json-mode) pi process — which has no TUI handles —
+     * exits 0 mid-tool the moment the loop drains, silently killing the run.
+     * Callers that hand the job to the background MUST call `proc.unref()`
+     * so a finished pi process can still exit while the job runs on.
+     */
+    proc: ChildProcess;
 }
 
 /**
  * Spawn `bash -c <command>` with output written directly to logPath. The
  * child is detached into its own process group so the whole tree can be
  * signalled with a negative PID. The parent closes its copy of the fd
- * immediately after spawn; everything is unref'd.
+ * immediately after spawn. The returned handle stays ref'd; background
+ * callers must `proc.unref()` it (see SpawnResult.proc).
  */
 export function spawnWithFileOutput(args: {
     command: string;
@@ -59,9 +69,8 @@ export function spawnWithFileOutput(args: {
         throw new Error("Failed to spawn process");
     }
     const pid = proc.pid;
-    proc.unref();
 
-    return { pid, logPath: args.logPath, exit };
+    return { pid, logPath: args.logPath, exit, proc };
 }
 
 /** The log dir is a constant (types.LOG_DIR), so create it once per process
