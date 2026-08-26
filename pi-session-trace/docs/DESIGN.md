@@ -154,8 +154,8 @@ type TrajectoryRecord =
 
 M1 先做回放的原因：数据源稳定（JSONL 格式有版本号、可静态验证），UI 组件先在确定性数据上打磨好，再接 live 的复杂度。
 
-## 8. 开放问题
+## 8. 开放问题（已验证，2026-08-26）
 
-1. subagent 事件在 pi 生命周期里如何暴露？（影响 FR-12，开工前查 pi 源码确认）
-2. `session_start` 恢复旧会话时，pi 是否会重放历史 message 事件？（决定 live 模式能否"补全"恢复前的轨迹——若能，live/replay 可进一步融合）
-3. 图片块在 pi-tui Image 组件的实际能力边界（FR-14 可行性）
+1. ~~subagent 事件在 pi 生命周期里如何暴露？~~ **核心 API 无 subagent 专属事件**（`core/extensions/types.d.ts` 已查）。FR-12 推迟，将来依赖 subagent 扩展（如 pi-subagents）自行暴露的标识。
+2. ~~`session_start` 恢复旧会话时是否会重放历史 message 事件？~~ **不会重放，但可自己回填**：`SessionStartEvent.reason` 区分 `startup/reload/new/resume/fork`，且 `ctx.sessionManager`（ReadonlySessionManager）暴露 `getEntries()`/`getSessionFile()`/`getTree()`。live 模式在 `resume/fork/startup` 时直接从 sessionManager 拿全量 entries 回填 → **live 与 replay 融合成立：恢复即补全轨迹**，且不必重复解析 JSONL。
+3. 图片块在 pi-tui Image 组件的实际能力边界（FR-14 可行性）——实现 P2 时确认。

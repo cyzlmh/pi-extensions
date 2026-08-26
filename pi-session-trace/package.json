@@ -15,7 +15,12 @@
   "license": "MIT",
   "author": "cyzlmh",
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": ["./extensions/index.ts"]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typescript": "^5"
   },
   "repository": {
     "type": "git",
