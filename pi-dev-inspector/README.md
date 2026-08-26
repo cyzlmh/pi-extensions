@@ -2,8 +2,6 @@
 
 Developer inspection tools for [pi](https://pi.dev/): peek under the hood at what pi sends to the model and how the API responds.
 
-![/system-prompt demo](https://raw.githubusercontent.com/cyzlmh/pi-extensions/main/pi-dev-inspector/demo.gif)
-
 ## Install
 
 ```bash

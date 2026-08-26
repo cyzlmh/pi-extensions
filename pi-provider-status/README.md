@@ -2,8 +2,6 @@
 
 `/status` — a live panel in [pi](https://github.com/earendil-works/pi) showing **remaining quota / balance** for every provider you have configured, with usage bars and reset timelines.
 
-![/status demo](https://raw.githubusercontent.com/cyzlmh/pi-extensions/main/pi-provider-status/demo.gif)
-
 ```
 ● Kimi Coding (kimi-coding) (0.8s)
   Week       ██████░░░░░░░░░░  43% used   resets 8-25 00:00

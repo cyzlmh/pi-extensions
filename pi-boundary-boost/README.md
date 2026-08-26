@@ -2,8 +2,6 @@
 
 Rank **direct directory children first** in [pi](https://github.com/earendil-works/pi)'s `@` file completion.
 
-![demo](https://raw.githubusercontent.com/cyzlmh/pi-extensions/main/pi-boundary-boost/demo.gif)
-
 ## The problem
 
 pi's built-in `@` completion always routes to fd fuzzy search with `--max-results 100`. When you type a scoped query like `@~/projects/pro`, the result set floods with deep nested matches (`venv/.../site-packages/profile/…`), and the direct child you obviously meant can be cut by the 100-result cap before scoring even runs.

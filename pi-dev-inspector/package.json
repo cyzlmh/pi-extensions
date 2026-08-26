@@ -1,6 +1,6 @@
 {
   "name": "pi-dev-inspector",
-  "version": "0.1.3",
+  "version": "0.1.2",
   "description": "Developer inspection tools for pi: view the system prompt and inspect API request/response round-trips",
   "keywords": [
     "pi-package",
