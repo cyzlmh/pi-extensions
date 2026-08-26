@@ -103,6 +103,180 @@ export interface ReplayResult {
 }
 
 /**
+ * Incremental entry → record converter. Shared by streamSession (JSONL lines)
+ * and the live backfill (sessionManager.getEntries()) — same session format.
+ */
+export class EntryConverter {
+	private turn = 0;
+	private counter = 0;
+	/** toolCallId → pending ToolRecord awaiting its toolResult. */
+	private pendingTools = new Map<string, ToolRecord>();
+
+	get lastTurn(): number {
+		return this.turn;
+	}
+
+	/** Tool call ids still waiting for a result (for live-mode correlation). */
+	pendingToolIds(): Map<string, string> {
+		// toolCallId → record id
+		const out = new Map<string, string>();
+		for (const [callId, rec] of this.pendingTools) out.set(callId, rec.id);
+		return out;
+	}
+
+	/** Convert one session entry; returns produced records (may be empty). */
+	push(entry: any): TrajectoryRecord[] {
+		const out: TrajectoryRecord[] = [];
+		const ts = Date.parse(entry.timestamp ?? "") || 0;
+		const id = typeof entry.id === "string" ? entry.id : `gen-${this.counter++}`;
+
+		switch (entry.type) {
+			case "message": {
+				const msg = entry.message;
+				if (!msg) break;
+				if (msg.role === "user") {
+					this.turn++;
+					out.push({
+						kind: "user",
+						id,
+						ts,
+						turn: this.turn,
+						text: extractText(msg.content),
+						imageCount: countImages(msg.content),
+					});
+				} else if (msg.role === "assistant") {
+					out.push({
+						kind: "assistant",
+						id,
+						ts,
+						turn: this.turn,
+						text: extractText(msg.content),
+						thinkingText: extractThinking(msg.content) || undefined,
+						model: msg.model,
+						usage: msg.usage,
+						stopReason: msg.stopReason,
+						interrupted: msg.stopReason === "aborted" || msg.stopReason === "error",
+					});
+					for (const call of extractToolCalls(msg.content)) {
+						const rec: ToolRecord = {
+							kind: "tool",
+							id: `${id}:${call.id}`,
+							ts,
+							turn: this.turn,
+							toolCallId: call.id,
+							name: call.name,
+							argsSummary: summarizeArgs(call.name, call.args),
+							args: call.args,
+							status: "running",
+						};
+						this.pendingTools.set(call.id, rec);
+						out.push(rec);
+					}
+				} else if (msg.role === "toolResult") {
+					const callId = msg.toolCallId ?? "";
+					const output = extractText(msg.content);
+					const pending = this.pendingTools.get(callId);
+					if (pending) {
+						pending.status = msg.isError ? "error" : "ok";
+						pending.output = output;
+						pending.durationMs = ts - pending.ts;
+						this.pendingTools.delete(callId);
+					} else {
+						// Result whose call isn't visible (e.g. pre-compaction) — show completed.
+						out.push({
+							kind: "tool",
+							id: `${id}:result`,
+							ts,
+							turn: this.turn,
+							toolCallId: callId,
+							name: msg.toolName ?? "tool",
+							argsSummary: "",
+							status: msg.isError ? "error" : "ok",
+							output,
+						});
+					}
+				} else if (msg.role === "bashExecution") {
+					const exit = msg.exitCode === undefined ? "…" : String(msg.exitCode);
+					out.push({
+						kind: "marker",
+						id,
+						ts,
+						turn: this.turn,
+						marker: "bash",
+						text: `$ ${msg.command ?? ""}`,
+						detail: `exit ${exit}${msg.cancelled ? " (cancelled)" : ""}\n${msg.output ?? ""}`.trim(),
+					});
+				} else if (msg.role === "custom") {
+					if (msg.display) {
+						out.push({
+							kind: "marker",
+							id,
+							ts,
+							turn: this.turn,
+							marker: "custom",
+							text: `[${msg.customType ?? "custom"}]`,
+							detail: extractText(msg.content),
+						});
+					}
+				}
+				// compactionSummary / branchSummary messages mirror the dedicated
+				// compaction / branch_summary entries — skip to avoid duplicates.
+				break;
+			}
+			case "compaction":
+				out.push({
+					kind: "compaction",
+					id,
+					ts,
+					turn: this.turn,
+					summary: entry.summary ?? "",
+					tokensBefore: entry.tokensBefore,
+				});
+				break;
+			case "model_change":
+				out.push({
+					kind: "marker",
+					id,
+					ts,
+					turn: this.turn,
+					marker: "model_change",
+					text: `model → ${entry.provider ?? "?"}/${entry.modelId ?? "?"}`,
+				});
+				break;
+			case "thinking_level_change":
+				out.push({
+					kind: "marker",
+					id,
+					ts,
+					turn: this.turn,
+					marker: "thinking_change",
+					text: `thinking → ${entry.thinkingLevel ?? "?"}`,
+				});
+				break;
+			case "branch_summary":
+				out.push({
+					kind: "marker",
+					id,
+					ts,
+					turn: this.turn,
+					marker: "branch",
+					text: "branch point",
+					detail: entry.summary,
+				});
+				break;
+			default:
+				break; // session header, custom entries, … — nothing to show
+		}
+		return out;
+	}
+
+	/** Mark still-pending tools as interrupted (session ended mid-flight). */
+	finalize(): void {
+		for (const rec of this.pendingTools.values()) rec.status = "interrupted";
+	}
+}
+
+/**
  * Stream-parse a session file, emitting record batches as they are produced
  * so the UI can render progressively (E1/E2).
  *
@@ -114,12 +288,10 @@ export async function streamSession(
 	emit: (batch: TrajectoryRecord[]) => void,
 ): Promise<ReplayResult> {
 	const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
-	let turn = 0;
+	const converter = new EntryConverter();
 	let badLines = 0;
 	let recordCount = 0;
 	let batch: TrajectoryRecord[] = [];
-	/** toolCallId → pending ToolRecord awaiting its toolResult. */
-	const pendingTools = new Map<string, ToolRecord>();
 
 	const flush = () => {
 		if (batch.length === 0) return;
@@ -137,151 +309,10 @@ export async function streamSession(
 			badLines++;
 			continue;
 		}
-		const ts = Date.parse(entry.timestamp ?? "") || 0;
-		const id = typeof entry.id === "string" ? entry.id : `gen-${recordCount + batch.length}`;
-
-		switch (entry.type) {
-			case "message": {
-				const msg = entry.message;
-				if (!msg) break;
-				if (msg.role === "user") {
-					turn++;
-					batch.push({
-						kind: "user",
-						id,
-						ts,
-						turn,
-						text: extractText(msg.content),
-						imageCount: countImages(msg.content),
-					});
-				} else if (msg.role === "assistant") {
-					batch.push({
-						kind: "assistant",
-						id,
-						ts,
-						turn,
-						text: extractText(msg.content),
-						thinkingText: extractThinking(msg.content) || undefined,
-						model: msg.model,
-						usage: msg.usage,
-						stopReason: msg.stopReason,
-						interrupted: msg.stopReason === "aborted" || msg.stopReason === "error",
-					});
-					for (const call of extractToolCalls(msg.content)) {
-						const rec: ToolRecord = {
-							kind: "tool",
-							id: `${id}:${call.id}`,
-							ts,
-							turn,
-							toolCallId: call.id,
-							name: call.name,
-							argsSummary: summarizeArgs(call.name, call.args),
-							args: call.args,
-							status: "running",
-						};
-						pendingTools.set(call.id, rec);
-						batch.push(rec);
-					}
-				} else if (msg.role === "toolResult") {
-					const callId = msg.toolCallId ?? "";
-					const output = extractText(msg.content);
-					const pending = pendingTools.get(callId);
-					if (pending) {
-						pending.status = msg.isError ? "error" : "ok";
-						pending.output = output;
-						pending.durationMs = ts - pending.ts;
-						pendingTools.delete(callId);
-					} else {
-						// Result whose call isn't visible (e.g. pre-compaction) — show completed.
-						batch.push({
-							kind: "tool",
-							id: `${id}:result`,
-							ts,
-							turn,
-							toolCallId: callId,
-							name: msg.toolName ?? "tool",
-							argsSummary: "",
-							status: msg.isError ? "error" : "ok",
-							output,
-						});
-					}
-				} else if (msg.role === "bashExecution") {
-					const exit = msg.exitCode === undefined ? "…" : String(msg.exitCode);
-					batch.push({
-						kind: "marker",
-						id,
-						ts,
-						turn,
-						marker: "bash",
-						text: `$ ${msg.command ?? ""}`,
-						detail: `exit ${exit}${msg.cancelled ? " (cancelled)" : ""}\n${msg.output ?? ""}`.trim(),
-					});
-				} else if (msg.role === "custom") {
-					if (msg.display) {
-						batch.push({
-							kind: "marker",
-							id,
-							ts,
-							turn,
-							marker: "custom",
-							text: `[${msg.customType ?? "custom"}]`,
-							detail: extractText(msg.content),
-						});
-					}
-				}
-				// compactionSummary / branchSummary messages mirror the dedicated
-				// compaction / branch_summary entries — skip to avoid duplicates.
-				break;
-			}
-			case "compaction":
-				batch.push({
-					kind: "compaction",
-					id,
-					ts,
-					turn,
-					summary: entry.summary ?? "",
-					tokensBefore: entry.tokensBefore,
-				});
-				break;
-			case "model_change":
-				batch.push({
-					kind: "marker",
-					id,
-					ts,
-					turn,
-					marker: "model_change",
-					text: `model → ${entry.provider ?? "?"}/${entry.modelId ?? "?"}`,
-				});
-				break;
-			case "thinking_level_change":
-				batch.push({
-					kind: "marker",
-					id,
-					ts,
-					turn,
-					marker: "thinking_change",
-					text: `thinking → ${entry.thinkingLevel ?? "?"}`,
-				});
-				break;
-			case "branch_summary":
-				batch.push({
-					kind: "marker",
-					id,
-					ts,
-					turn,
-					marker: "branch",
-					text: "branch point",
-					detail: entry.summary,
-				});
-				break;
-			default:
-				break; // session header, custom entries, … — nothing to show
-		}
-
+		batch.push(...converter.push(entry));
 		if (batch.length >= 64) flush();
 	}
-	// Tools that never got a result (crashed/interrupted session).
-	for (const rec of pendingTools.values()) rec.status = "interrupted";
+	converter.finalize();
 	flush();
 	return { badLines, recordCount };
 }

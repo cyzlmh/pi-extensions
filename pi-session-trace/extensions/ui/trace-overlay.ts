@@ -16,6 +16,8 @@ type Row = { type: "header"; turn: number } | { type: "record"; index: number };
 
 const CHROME = 4; // title + separator + separator + hint line
 
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 export class TraceOverlay implements Component {
 	private rows: Row[] = [];
 	private selected = 0;
@@ -23,7 +25,11 @@ export class TraceOverlay implements Component {
 	private collapsed = new Set<number>();
 	private inspector: { record: TrajectoryRecord; scroll: number } | null = null;
 	private note = "";
-	private jumpedToEnd = false;
+	/** Tail-following (E1): true until the user scrolls away from the bottom. */
+	private follow = true;
+	private renderScheduled = false;
+	private spinnerIdx = 0;
+	private animTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		private tui: TUI,
@@ -35,13 +41,44 @@ export class TraceOverlay implements Component {
 		this.rebuildRows();
 		this.store.subscribe(() => {
 			this.rebuildRows();
-			// Replay starts at the tail (dsh tail-first convention) once data arrives.
-			if (!this.jumpedToEnd && this.rows.length > 0) {
-				this.selected = this.rows.length - 1;
-				this.jumpedToEnd = true;
-			}
-			this.tui.requestRender();
+			if (this.follow) this.selected = Math.max(0, this.rows.length - 1);
+			this.scheduleRender();
+			this.kickAnimation();
 		});
+	}
+
+	/** Coalesce bursts of store updates into ~16ms render ticks (E1). */
+	private scheduleRender(): void {
+		if (this.renderScheduled) return;
+		this.renderScheduled = true;
+		setTimeout(() => {
+			this.renderScheduled = false;
+			this.tui.requestRender();
+		}, 16);
+	}
+
+	/** Animate in-flight records (spinner) only while something is in flight. */
+	private kickAnimation(): void {
+		if (this.animTimer !== undefined || !this.hasInFlight()) return;
+		this.animTimer = setTimeout(() => {
+			this.animTimer = undefined;
+			this.spinnerIdx++;
+			if (this.hasInFlight()) {
+				this.tui.requestRender();
+				this.kickAnimation();
+			}
+		}, 200);
+	}
+
+	private hasInFlight(): boolean {
+		// Only the tail can contain in-flight records; scan backwards, stop early.
+		for (let i = this.store.records.length - 1; i >= 0; i--) {
+			const r = this.store.records[i]!;
+			if (r.kind === "assistant" && r.streaming) return true;
+			if (r.kind === "tool" && r.status === "running") return true;
+			if (r.kind === "user") return false; // turns are atomic; nothing in flight before it
+		}
+		return false;
 	}
 
 	setNote(note: string): void {
@@ -81,19 +118,25 @@ export class TraceOverlay implements Component {
 		}
 
 		if (matchesKey(data, "escape") || data === "q") {
+			if (this.animTimer !== undefined) clearTimeout(this.animTimer);
 			this.done();
 			return;
 		}
 		if (matchesKey(data, "up") || data === "k") this.move(-1);
 		else if (matchesKey(data, "down") || data === "j") this.move(1);
-		else if (data === "g") this.select(0);
-		else if (data === "G") this.select(this.rows.length - 1);
-		else if (matchesKey(data, "space") || matchesKey(data, "return")) this.activate();
+		else if (data === "g") {
+			this.select(0);
+			this.follow = false;
+		} else if (data === "G") {
+			this.select(this.rows.length - 1);
+			this.follow = true;
+		} else if (matchesKey(data, "space") || matchesKey(data, "return")) this.activate();
 		this.tui.requestRender();
 	}
 
 	private move(delta: number): void {
 		this.select(this.selected + delta);
+		this.follow = false;
 	}
 
 	private select(idx: number): void {
@@ -126,9 +169,11 @@ export class TraceOverlay implements Component {
 		const title = this.theme.bold(this.theme.fg("accent", ` trace `)) +
 			this.theme.fg("muted", `${this.title} · ${this.store.records.length} records`);
 		const sep = this.theme.fg("borderMuted", "─".repeat(width));
+		const newBelow = !this.follow && this.selected < this.rows.length - 1 ? this.rows.length - 1 - this.selected : 0;
 		const hint = this.inspector
 			? this.theme.fg("muted", " j/k scroll · esc back")
 			: this.theme.fg("muted", " j/k move · enter inspect · space fold · g/G top/end · q close") +
+				(newBelow > 0 ? this.theme.fg("warning", `  ↓ ${newBelow} new (G to follow)`) : "") +
 				(this.note ? this.theme.fg("warning", `  ${this.note}`) : "");
 
 		const body = this.inspector
@@ -178,9 +223,19 @@ export class TraceOverlay implements Component {
 				break;
 			case "assistant": {
 				const a = r as AssistantRecord;
-				const meta = a.streaming
-					? this.theme.fg("warning", " streaming…")
-					: this.theme.fg("dim", ` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok`);
+				let meta: string;
+				if (a.streaming) {
+					meta = this.theme.fg("warning", ` ${SPINNER[this.spinnerIdx % SPINNER.length]} streaming`);
+				} else {
+					const timing =
+						a.ttftMs !== undefined
+							? ` TTFT ${formatDuration(a.ttftMs)} · decode ${formatDuration(a.decodeMs)}`
+							: "";
+					meta = this.theme.fg(
+						"dim",
+						` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok${timing}`,
+					);
+				}
 				body = this.theme.fg("text", "● assistant ") + clip(a.text, width - 26) + meta;
 				break;
 			}
@@ -193,7 +248,7 @@ export class TraceOverlay implements Component {
 							? this.theme.fg("error", "✗")
 							: t.status === "interrupted"
 								? this.theme.fg("warning", "⏹")
-								: this.theme.fg("warning", "…");
+								: this.theme.fg("warning", SPINNER[this.spinnerIdx % SPINNER.length]);
 				body =
 					this.theme.fg("toolTitle", `⚙ ${padVisible(t.name, 10)}`) +
 					clip(t.argsSummary, width - 34) +
@@ -266,6 +321,8 @@ function inspectorLines(r: TrajectoryRecord, theme: Theme, width: number): strin
 			break;
 		case "assistant": {
 			if (r.model) lines.push(theme.fg("muted", ` model: ${r.model}`));
+			if (r.ttftMs !== undefined)
+				lines.push(theme.fg("muted", ` timing: TTFT ${formatDuration(r.ttftMs)} · decode ${formatDuration(r.decodeMs)}`));
 			if (r.usage) {
 				lines.push(
 					theme.fg(
