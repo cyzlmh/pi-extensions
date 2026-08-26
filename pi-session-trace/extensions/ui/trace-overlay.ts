@@ -300,7 +300,7 @@ export class TraceOverlay implements Component {
 		const termRows = process.stdout.rows ?? 24;
 		const narrow = width < 80;
 		const showTimeline = !narrow && this.store.records.length > 1;
-		const chrome = 4 + (showTimeline ? 1 : 0);
+		const chrome = 4 + (showTimeline ? 4 : 0); // timeline: 3 lanes + time axis
 		const bodyHeight = Math.max(4, Math.floor(termRows * 0.86) - chrome);
 
 		const title =
@@ -312,7 +312,7 @@ export class TraceOverlay implements Component {
 		const body = this.inspector ? this.renderInspector(width, bodyHeight) : this.renderList(width, bodyHeight);
 
 		const lines = [title, sep, ...body];
-		if (showTimeline) lines.push(this.renderTimeline(width));
+		if (showTimeline) lines.push(...this.renderTimeline(width));
 		lines.push(sep, hint);
 
 		// Open animation: reveal top-to-bottom over ~120ms (FR-15).
@@ -426,55 +426,80 @@ export class TraceOverlay implements Component {
 	}
 
 	/**
-	 * Timeline strip (FR-6): one line, each column a time bucket.
-	 * Assistant spans split TTFT (warning) vs decode (accent); tools ▂;
-	 * user •; compaction ◆. Cursor column shows the selected record.
+	 * Timeline strip (FR-6): three lanes (user / assistant / tool), one column per
+	 * time bucket. Char density stands in for opacity — TTFT ░ vs decode █ in the
+	 * same hue; running records pulse a spinner tick at their right edge; errors red.
 	 */
-	private renderTimeline(width: number): string {
+	private renderTimeline(width: number): string[] {
 		const range = this.zoom ?? this.fullRange();
-		if (!range || range.end - range.start < 1) return "";
-		const cols = width - 2;
+		if (!range || range.end - range.start < 1) return [];
+		const cols = Math.max(10, width - 9); // " user │" … "│"
 		const span = range.end - range.start;
-		const cells: { ch: string; color: Parameters<Theme["fg"]>[0]; priority: number }[] = new Array(cols);
 		const bucket = (ts: number) => Math.max(0, Math.min(cols - 1, Math.floor(((ts - range.start) / span) * cols)));
-		const put = (ts0: number, ts1: number, ch: string, color: Parameters<Theme["fg"]>[0], priority: number) => {
+
+		type Cell = { ch: string; color: Parameters<Theme["fg"]>[0]; priority: number };
+		const lanes: (Cell | undefined)[][] = [new Array(cols), new Array(cols), new Array(cols)];
+		const put = (lane: number, ts0: number, ts1: number, ch: string, color: Cell["color"], priority: number) => {
 			for (let c = bucket(ts0); c <= bucket(Math.max(ts1, ts0 + span / cols)); c++) {
-				if (!cells[c] || cells[c].priority <= priority) cells[c] = { ch, color, priority };
+				const cell = lanes[lane]![c];
+				if (!cell || cell.priority <= priority) lanes[lane]![c] = { ch, color, priority };
 			}
 		};
+		const tick = SPINNER[this.spinnerIdx % SPINNER.length];
 
 		for (const r of this.store.records) {
-			if (r.kind === "assistant") {
-				const a = r as AssistantRecord;
-				const end = a.ttftMs !== undefined ? a.ts + a.ttftMs + (a.decodeMs ?? 0) : a.ts;
-				if (a.ttftMs !== undefined) {
-					put(a.ts, a.ts + a.ttftMs, "█", "warning", 2);
-					put(a.ts + a.ttftMs, end, "█", "accent", 2);
-				} else {
-					put(a.ts, end, "█", "accent", 2);
+			switch (r.kind) {
+				case "user":
+					put(0, r.ts, r.ts, "●", "userMessageText", 1);
+					break;
+				case "assistant": {
+					const a = r as AssistantRecord;
+					if (a.streaming) {
+						put(1, a.ts, Date.now(), "░", "accent", 2);
+						put(1, Date.now(), Date.now(), tick, "accent", 5);
+					} else if (a.ttftMs !== undefined) {
+						put(1, a.ts, a.ts + a.ttftMs, "░", "accent", 2); // TTFT = dimmed shade
+						put(1, a.ts + a.ttftMs, a.ts + a.ttftMs + (a.decodeMs ?? 0), "█", "accent", 2);
+					} else {
+						put(1, a.ts, a.ts, "█", "accent", 2);
+					}
+					break;
 				}
-			} else if (r.kind === "tool") {
-				put(r.ts, r.ts + (r.durationMs ?? 0), "▂", r.status === "error" ? "error" : "muted", 3);
-			} else if (r.kind === "user") {
-				put(r.ts, r.ts, "•", "userMessageText", 1);
-			} else if (r.kind === "compaction") {
-				put(r.ts, r.ts, "◆", "warning", 4);
+				case "tool": {
+					if (r.status === "running") {
+						put(2, r.ts, Date.now(), "▄", "muted", 3);
+						put(2, Date.now(), Date.now(), tick, "warning", 5);
+					} else {
+						put(2, r.ts, r.ts + (r.durationMs ?? 0), "▄", r.status === "error" ? "error" : "muted", 3);
+					}
+					break;
+				}
+				case "compaction":
+					put(1, r.ts, r.ts, "◆", "warning", 4);
+					break;
+				default:
+					break;
 			}
 		}
 
-		let line = " ";
-		for (let c = 0; c < cols; c++) {
-			const cell = cells[c];
-			line += cell ? this.theme.fg(cell.color, cell.ch) : this.theme.fg("borderMuted", "·");
-		}
-		// selected-record cursor on the timeline
 		const selTs = this.selectedRecordTs();
-		if (selTs !== undefined && selTs >= range.start && selTs <= range.end) {
-			const c = bucket(selTs);
-			line = replaceVisibleChar(line, 1 + c, this.theme.inverse("▐"));
+		const cursorCol = selTs !== undefined && selTs >= range.start && selTs <= range.end ? bucket(selTs) : -1;
+		const labels = ["user", "asst", "tool"];
+		const lines: string[] = [];
+		for (let lane = 0; lane < 3; lane++) {
+			let body = "";
+			for (let c = 0; c < cols; c++) {
+				const cell = lanes[lane]![c];
+				if (c === cursorCol) body += this.theme.inverse(cell ? cell.ch : " ");
+				else body += cell ? this.theme.fg(cell.color, cell.ch) : " ";
+			}
+			lines.push(
+				this.theme.fg("dim", ` ${labels[lane]!} `) + this.theme.fg("borderMuted", "│") + body + this.theme.fg("borderMuted", "│"),
+			);
 		}
 		const zoomTag = this.zoom ? this.theme.fg("warning", " zoomed (0 reset)") : "";
-		return line + zoomTag;
+		lines.push(this.theme.fg("dim", `       └${formatClock(range.start)}${"─".repeat(Math.max(0, cols - 16))}${formatClock(range.end)}┘`) + zoomTag);
+		return lines;
 	}
 
 	private renderInspector(width: number, height: number): string[] {
@@ -497,27 +522,6 @@ function clip(text: string, max: number): string {
 function padVisible(s: string, width: number): string {
 	const w = visibleWidth(s);
 	return w >= width ? s : s + " ".repeat(width - w);
-}
-
-/** Replace the n-th visible character of an ANSI-styled line. Best-effort: only safe for our own timeline line. */
-function replaceVisibleChar(line: string, n: number, replacement: string): string {
-	let visible = 0;
-	let i = 0;
-	while (i < line.length) {
-		if (line[i] === "\x1b") {
-			const end = line.indexOf("m", i);
-			i = end < 0 ? line.length : end + 1;
-			continue;
-		}
-		if (visible === n) {
-			// find end of this (possibly multi-byte) character
-			const next = i + 1;
-			return line.slice(0, i) + replacement + line.slice(next);
-		}
-		visible++;
-		i++;
-	}
-	return line;
 }
 
 function wrapText(text: string, width: number): string[] {
