@@ -1,6 +1,6 @@
 {
   "name": "pi-fork-pane",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Split a tmux pane and fork the current pi session into it",
   "keywords": [
     "pi-package",

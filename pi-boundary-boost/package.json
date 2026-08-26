@@ -1,6 +1,6 @@
 {
   "name": "pi-boundary-boost",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Rank direct directory children first in pi's @ file completion — @dir/prefix reads the directory directly and merges fd fuzzy results after, so deep matches never crowd out the obvious hit",
   "keywords": [
     "pi-package",
@@ -13,7 +13,9 @@
   "license": "MIT",
   "author": "cyzlmh",
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   },
   "repository": {
     "type": "git",
