@@ -439,13 +439,16 @@ export class TraceOverlay implements Component {
 
 		type Cell = { ch: string; color: Parameters<Theme["fg"]>[0]; priority: number };
 		const lanes: (Cell | undefined)[][] = [new Array(cols), new Array(cols), new Array(cols)];
+		/** Paint [ts0, ts1] inclusive; zero-duration events paint exactly one column. */
 		const put = (lane: number, ts0: number, ts1: number, ch: string, color: Cell["color"], priority: number) => {
-			for (let c = bucket(ts0); c <= bucket(Math.max(ts1, ts0 + span / cols)); c++) {
+			for (let c = bucket(ts0); c <= bucket(ts1); c++) {
 				const cell = lanes[lane]![c];
 				if (!cell || cell.priority <= priority) lanes[lane]![c] = { ch, color, priority };
 			}
 		};
 		const tick = SPINNER[this.spinnerIdx % SPINNER.length];
+		/** Assistant bars occupy these columns; tools of the same turn start strictly after. */
+		let lastAsstBucket = -1;
 
 		for (const r of this.store.records) {
 			switch (r.kind) {
@@ -463,14 +466,31 @@ export class TraceOverlay implements Component {
 					} else {
 						put(1, a.ts, a.ts, "█", "accent", 2);
 					}
+					lastAsstBucket = bucket(a.ttftMs !== undefined ? a.ts + a.ttftMs + (a.decodeMs ?? 0) : a.ts);
 					break;
 				}
 				case "tool": {
+					// A tool starts right after its parent assistant message; when both
+					// quantize to the same column, nudge the tool one column right so the
+					// lanes read as a sequence instead of stacking (replay especially).
+					const nudge = bucket(r.ts) <= lastAsstBucket ? lastAsstBucket + 1 : -1;
+					const putTool = (ch: string, color: Cell["color"], priority: number, end: number) => {
+						if (nudge < 0) {
+							put(2, r.ts, end, ch, color, priority);
+							return;
+						}
+						// Nudged: paint from the nudged start; even sub-bucket tools get one column.
+						const last = Math.max(nudge, bucket(Math.max(end, r.ts)));
+						for (let c = nudge; c <= last; c++) {
+							const cell = lanes[2]![c];
+							if (!cell || cell.priority <= priority) lanes[2]![c] = { ch, color, priority };
+						}
+					};
 					if (r.status === "running") {
-						put(2, r.ts, Date.now(), "▄", "muted", 3);
+						putTool("▄", "muted", 3, Date.now());
 						put(2, Date.now(), Date.now(), tick, "warning", 5);
 					} else {
-						put(2, r.ts, r.ts + (r.durationMs ?? 0), "▄", r.status === "error" ? "error" : "muted", 3);
+						putTool("▄", r.status === "error" ? "error" : "muted", 3, r.ts + (r.durationMs ?? 0));
 					}
 					break;
 				}
