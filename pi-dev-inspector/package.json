@@ -25,10 +25,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cyzlmh/pi-extensions.git",
-    "directory": "pi-devtools"
+    "directory": "pi-dev-inspector"
   },
   "bugs": {
     "url": "https://github.com/cyzlmh/pi-extensions/issues"
   },
-  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-devtools"
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-dev-inspector"
 }

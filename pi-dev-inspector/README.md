@@ -1,11 +1,11 @@
-# pi-devtools
+# pi-dev-inspector
 
 Developer inspection tools for [pi](https://pi.dev/): peek under the hood at what pi sends to the model and how the API responds.
 
 ## Install
 
 ```bash
-pi install npm:pi-devtools
+pi install npm:pi-dev-inspector
 ```
 
 Then `/reload` or restart pi.
