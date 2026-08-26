@@ -4,6 +4,8 @@ Lightweight background bash tasks for [pi](https://github.com/earendil-works/pi)
 
 > Forked from [pi-patty-bg-tasks](https://github.com/patty-io/pi-patty-bg-tasks) (MIT), simplified to a zero-dependency core (~1.7k lines vs ~6.9k) with a rewritten UI and task-tool layer. If you want monitors, streaming jobs, or `agent_bg`, use the original — it's a superset of this package.
 
+![demo](https://raw.githubusercontent.com/cyzlmh/pi-extensions/main/pi-bg-tasks/demo.gif)
+
 ## Install
 
 ```sh

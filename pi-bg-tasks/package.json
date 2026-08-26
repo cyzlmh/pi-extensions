@@ -1,6 +1,6 @@
 {
   "name": "pi-bg-tasks",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Lightweight background bash tasks for pi — run_in_background, auto-background at timeout, Ctrl+Shift+B, completion notifications, zero-dependency core",
   "keywords": [
     "pi-package",
