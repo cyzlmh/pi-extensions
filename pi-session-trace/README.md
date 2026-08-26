@@ -1,21 +1,49 @@
 # pi-session-trace
 
-> 🚧 Work in progress — placeholder, not yet published.
+A pure-TUI session trajectory viewer for [pi](https://github.com/earendil-works/pi), inspired by DeepSeek Harness (`dsh`)'s trajectory view. One `/trace` command — live tail of the current session, or replay of any historical session — with no server, no browser, and no extra storage (pi's own session JSONL is the persistence layer).
 
-Live + replayable session trajectory for [pi](https://github.com/earendil-works/pi), inspired by DeepSeek Harness (`dsh`)'s trajectory view.
+## Install
 
-## Goals
+```sh
+pi install npm:pi-session-trace
+```
 
-- **Live** — dsh-style turn-grouped timeline with TTFT/decode split, streamed as the session runs
-- **Replayable** — reads pi's session JSONL, so finished historical sessions open in the same view
-- **Persistent** — traces survive pi restarts; nothing is memory-only
+Then `/reload` or restart pi.
 
-## Non-goals
+## Usage
 
-- Cost/error analytics dashboards (that's `pi-trace-extension`'s territory)
-- Cloud upload — local-first, read-only over session data
+| Command | What it does |
+|---|---|
+| `/trace` | Live view of the **current** session (collects from extension load; resume/fork/reload backfill full history) |
+| `/trace pick` | Session picker — fuzzy-filter all historical sessions, enter to open |
+| `/trace <id-prefix>` | Replay one historical session directly |
 
-## Docs
+## Keys
 
-- [docs/PRD.md](docs/PRD.md) — 需求文档（含体验原则）
-- [docs/DESIGN.md](docs/DESIGN.md) — 技术方案
+| Key | Action |
+|---|---|
+| `j`/`k` / `↑`/`↓` | Move selection |
+| `enter` | Inspect record (summary → full I/O) / fold on turn headers |
+| `space` | Fold / unfold a turn |
+| `/` | Search record contents, `n`/`N` jump between matches |
+| `+` / `-` / `0` | Zoom timeline in (around selection) / out / reset |
+| `g` / `G` | Top / bottom (G also re-enables tail-follow) |
+| `q` / `Esc` | Close (or back out of inspector) |
+
+## What you see
+
+- **Turn-grouped records** — user / assistant / tool / compaction, one dense line each
+- **TTFT vs decode timing** on assistant rows (live mode), plus token usage
+- **Timeline strip** — TTFT/decode color-split spans, tool ticks, compaction markers; zoom with `+`/`-`
+- **Live indicators** — spinner on streaming assistant messages and running tools; tail-follow with a `↓ N new` hint when you scroll up
+- **Inspector** — full message text + thinking, tool args/output, usage & cost, timing
+
+## Design notes
+
+- **Local-first & read-only**: never writes to or controls the session; replays read `~/.pi/agent/sessions/` directly
+- **Live + replay share one record model** (`TrajectoryRecord`); live events stream in at a ~16 ms coalesced render tick so heavy token streams don't flicker the UI
+- **Colors come 100% from pi's theme tokens** — it adapts to your theme automatically
+
+## License
+
+MIT

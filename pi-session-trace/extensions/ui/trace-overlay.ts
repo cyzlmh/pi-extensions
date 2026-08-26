@@ -1,4 +1,4 @@
-/** TraceOverlay — main trajectory view: turn-grouped record list + inspector. */
+/** TraceOverlay — main trajectory view: turn-grouped record list + inspector + timeline. */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, matchesKey, truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
@@ -14,9 +14,10 @@ import {
 
 type Row = { type: "header"; turn: number } | { type: "record"; index: number };
 
-const CHROME = 4; // title + separator + separator + hint line
-
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/** Zoom window halves/doubles around the selected record's timestamp. */
+const ZOOM_FACTOR = 3;
+const OPEN_ANIM_MS = 120;
 
 export class TraceOverlay implements Component {
 	private rows: Row[] = [];
@@ -30,6 +31,14 @@ export class TraceOverlay implements Component {
 	private renderScheduled = false;
 	private spinnerIdx = 0;
 	private animTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Search: / enters input mode, n/N jumps between matches. */
+	private searchMode = false;
+	private query = "";
+	private matchesDirty = true;
+	private matches: number[] = [];
+	/** Timeline zoom window [startMs, endMs]; null = full range. */
+	private zoom: { start: number; end: number } | null = null;
+	private openedAt = Date.now();
 
 	constructor(
 		private tui: TUI,
@@ -41,10 +50,16 @@ export class TraceOverlay implements Component {
 		this.rebuildRows();
 		this.store.subscribe(() => {
 			this.rebuildRows();
+			this.matchesDirty = true;
 			if (this.follow) this.selected = Math.max(0, this.rows.length - 1);
 			this.scheduleRender();
 			this.kickAnimation();
 		});
+	}
+
+	setNote(note: string): void {
+		this.note = note;
+		this.tui.requestRender();
 	}
 
 	/** Coalesce bursts of store updates into ~16ms render ticks (E1). */
@@ -81,22 +96,25 @@ export class TraceOverlay implements Component {
 		return false;
 	}
 
-	setNote(note: string): void {
-		this.note = note;
-		this.tui.requestRender();
-	}
-
 	// ------------------------------------------------------------------ rows
+
+	private inZoomWindow(ts: number): boolean {
+		return !this.zoom || (ts >= this.zoom.start && ts <= this.zoom.end);
+	}
 
 	private rebuildRows(): void {
 		const rows: Row[] = [];
-		const turns = this.store.turns();
-		for (const turn of turns) {
-			rows.push({ type: "header", turn });
-			if (this.collapsed.has(turn)) continue;
+		for (const turn of this.store.turns()) {
 			const range = this.store.turnRange(turn);
 			if (!range) continue;
-			for (let i = range.first; i <= range.last; i++) rows.push({ type: "record", index: i });
+			const visibleIdx: number[] = [];
+			for (let i = range.first; i <= range.last; i++) {
+				if (this.inZoomWindow(this.store.records[i]!.ts)) visibleIdx.push(i);
+			}
+			if (this.zoom && visibleIdx.length === 0) continue;
+			rows.push({ type: "header", turn });
+			if (this.collapsed.has(turn)) continue;
+			for (const i of visibleIdx) rows.push({ type: "record", index: i });
 		}
 		this.rows = rows;
 		if (this.selected >= rows.length) this.selected = Math.max(0, rows.length - 1);
@@ -105,17 +123,8 @@ export class TraceOverlay implements Component {
 	// ------------------------------------------------------------------ input
 
 	handleInput(data: string): void {
-		if (this.inspector) {
-			if (matchesKey(data, "escape") || data === "q") {
-				this.inspector = null;
-			} else if (matchesKey(data, "up") || data === "k") {
-				this.inspector.scroll = Math.max(0, this.inspector.scroll - 1);
-			} else if (matchesKey(data, "down") || data === "j") {
-				this.inspector.scroll++;
-			}
-			this.tui.requestRender();
-			return;
-		}
+		if (this.searchMode) return this.handleSearchInput(data);
+		if (this.inspector) return this.handleInspectorInput(data);
 
 		if (matchesKey(data, "escape") || data === "q") {
 			if (this.animTimer !== undefined) clearTimeout(this.animTimer);
@@ -130,7 +139,52 @@ export class TraceOverlay implements Component {
 		} else if (data === "G") {
 			this.select(this.rows.length - 1);
 			this.follow = true;
-		} else if (matchesKey(data, "space") || matchesKey(data, "return")) this.activate();
+		} else if (data === "/") {
+			this.searchMode = true;
+		} else if (data === "n") {
+			this.jumpMatch(1);
+		} else if (data === "N") {
+			this.jumpMatch(-1);
+		} else if (data === "+") {
+			this.adjustZoom(1 / ZOOM_FACTOR);
+		} else if (data === "-") {
+			this.adjustZoom(ZOOM_FACTOR);
+		} else if (data === "0") {
+			this.zoom = null;
+			this.rebuildRows();
+		} else if (matchesKey(data, "space") || matchesKey(data, "return")) {
+			this.activate();
+		}
+		this.tui.requestRender();
+	}
+
+	private handleSearchInput(data: string): void {
+		if (matchesKey(data, "escape")) {
+			this.searchMode = false;
+			this.query = "";
+			this.matches = [];
+		} else if (matchesKey(data, "return")) {
+			this.searchMode = false;
+			this.matchesDirty = true;
+			this.jumpMatch(1);
+		} else if (matchesKey(data, "backspace")) {
+			this.query = this.query.slice(0, -1);
+			this.matchesDirty = true;
+		} else if (data.length === 1 && data >= " ") {
+			this.query += data;
+			this.matchesDirty = true;
+		}
+		this.tui.requestRender();
+	}
+
+	private handleInspectorInput(data: string): void {
+		if (matchesKey(data, "escape") || data === "q") {
+			this.inspector = null;
+		} else if (matchesKey(data, "up") || data === "k") {
+			this.inspector!.scroll = Math.max(0, this.inspector!.scroll - 1);
+		} else if (matchesKey(data, "down") || data === "j") {
+			this.inspector!.scroll++;
+		}
 		this.tui.requestRender();
 	}
 
@@ -156,6 +210,86 @@ export class TraceOverlay implements Component {
 		if (record) this.inspector = { record, scroll: 0 };
 	}
 
+	// ------------------------------------------------------------------ search
+
+	private searchableText(r: TrajectoryRecord): string {
+		switch (r.kind) {
+			case "user":
+				return r.text;
+			case "assistant":
+				return r.text + (r.thinkingText ?? "");
+			case "tool":
+				return `${r.name} ${r.argsSummary} ${r.output ?? ""}`;
+			case "compaction":
+				return r.summary;
+			case "marker":
+				return `${r.text} ${r.detail ?? ""}`;
+		}
+	}
+
+	private ensureMatches(): void {
+		if (!this.matchesDirty) return;
+		this.matchesDirty = false;
+		const q = this.query.toLowerCase();
+		this.matches = [];
+		if (!q) return;
+		for (let i = 0; i < this.rows.length; i++) {
+			const row = this.rows[i]!;
+			if (row.type !== "record") continue;
+			if (this.searchableText(this.store.records[row.index]!).toLowerCase().includes(q)) this.matches.push(i);
+		}
+	}
+
+	private jumpMatch(direction: 1 | -1): void {
+		this.ensureMatches();
+		if (this.matches.length === 0) return;
+		// nearest match after (or before) the current selection
+		const sorted = this.matches;
+		let next: number | undefined;
+		if (direction === 1) {
+			next = sorted.find((m) => m > this.selected) ?? sorted[0];
+		} else {
+			next = [...sorted].reverse().find((m) => m < this.selected) ?? sorted[sorted.length - 1];
+		}
+		if (next !== undefined) {
+			this.select(next);
+			this.follow = false;
+		}
+	}
+
+	// ------------------------------------------------------------------ zoom
+
+	private adjustZoom(factor: number): void {
+		const range = this.fullRange();
+		if (!range) return;
+		const center = this.selectedRecordTs() ?? (range.start + range.end) / 2;
+		const span = Math.max(1000, (this.zoom ? this.zoom.end - this.zoom.start : range.end - range.start) * factor);
+		if (span >= range.end - range.start) {
+			this.zoom = null;
+		} else {
+			let start = center - span / 2;
+			start = Math.max(range.start, Math.min(start, range.end - span));
+			this.zoom = { start, end: start + span };
+		}
+		this.rebuildRows();
+		// keep selection on a visible record
+		if (this.rows.length > 0 && this.rows[this.selected]?.type === "header") this.move(1);
+	}
+
+	private fullRange(): { start: number; end: number } | null {
+		const recs = this.store.records;
+		if (recs.length === 0) return null;
+		return { start: recs[0]!.ts, end: Math.max(recs[recs.length - 1]!.ts, Date.now()) };
+	}
+
+	private selectedRecordTs(): number | undefined {
+		const row = this.rows[this.selected];
+		if (!row) return undefined;
+		if (row.type === "record") return this.store.records[row.index]!.ts;
+		const range = this.store.turnRange(row.turn);
+		return range ? this.store.records[range.first]!.ts : undefined;
+	}
+
 	// ------------------------------------------------------------------ render
 
 	invalidate(): void {
@@ -164,28 +298,53 @@ export class TraceOverlay implements Component {
 
 	render(width: number): string[] {
 		const termRows = process.stdout.rows ?? 24;
-		const bodyHeight = Math.max(4, Math.floor(termRows * 0.86) - CHROME);
+		const narrow = width < 80;
+		const showTimeline = !narrow && this.store.records.length > 1;
+		const chrome = 4 + (showTimeline ? 1 : 0);
+		const bodyHeight = Math.max(4, Math.floor(termRows * 0.86) - chrome);
 
-		const title = this.theme.bold(this.theme.fg("accent", ` trace `)) +
+		const title =
+			this.theme.bold(this.theme.fg("accent", ` trace `)) +
 			this.theme.fg("muted", `${this.title} · ${this.store.records.length} records`);
 		const sep = this.theme.fg("borderMuted", "─".repeat(width));
+		const hint = this.renderHint();
+
+		const body = this.inspector ? this.renderInspector(width, bodyHeight) : this.renderList(width, bodyHeight);
+
+		const lines = [title, sep, ...body];
+		if (showTimeline) lines.push(this.renderTimeline(width));
+		lines.push(sep, hint);
+
+		// Open animation: reveal top-to-bottom over ~120ms (FR-15).
+		const elapsed = Date.now() - this.openedAt;
+		if (elapsed < OPEN_ANIM_MS) {
+			const reveal = Math.ceil((elapsed / OPEN_ANIM_MS) * lines.length);
+			setTimeout(() => this.tui.requestRender(), 24);
+			return lines.slice(0, Math.max(2, reveal)).map((l) => truncateToWidth(l, width));
+		}
+		return lines.map((l) => truncateToWidth(l, width));
+	}
+
+	private renderHint(): string {
+		if (this.searchMode) return this.theme.fg("text", ` /${this.query}`) + this.theme.fg("muted", "█");
+		if (this.inspector) return this.theme.fg("muted", " j/k scroll · esc back");
+		let hint = this.theme.fg("muted", " j/k move · enter inspect · space fold · / search · +/- zoom · g/G · q close");
+		this.ensureMatches();
+		if (this.query && this.matches.length > 0) {
+			const rank = this.matches.filter((m) => m <= this.selected).length || this.matches.length;
+			hint += this.theme.fg("searchMatchText", `  ${rank}/${this.matches.length} matches`);
+		} else if (this.query) {
+			hint += this.theme.fg("warning", "  no matches");
+		}
 		const newBelow = !this.follow && this.selected < this.rows.length - 1 ? this.rows.length - 1 - this.selected : 0;
-		const hint = this.inspector
-			? this.theme.fg("muted", " j/k scroll · esc back")
-			: this.theme.fg("muted", " j/k move · enter inspect · space fold · g/G top/end · q close") +
-				(newBelow > 0 ? this.theme.fg("warning", `  ↓ ${newBelow} new (G to follow)`) : "") +
-				(this.note ? this.theme.fg("warning", `  ${this.note}`) : "");
-
-		const body = this.inspector
-			? this.renderInspector(width, bodyHeight)
-			: this.renderList(width, bodyHeight);
-
-		return [title, sep, ...body, sep, hint].map((l) => truncateToWidth(l, width));
+		if (newBelow > 0) hint += this.theme.fg("warning", `  ↓ ${newBelow} new (G to follow)`);
+		if (this.note) hint += this.theme.fg("warning", `  ${this.note}`);
+		return hint;
 	}
 
 	private renderList(width: number, height: number): string[] {
 		if (this.rows.length === 0) {
-			return [this.theme.fg("muted", "  loading… or empty session")];
+			return [this.theme.fg("muted", this.store.records.length === 0 ? "  loading… or empty session" : "  nothing in zoom window (0 to reset)")];
 		}
 		// keep selection in view
 		if (this.selected < this.scroll) this.scroll = this.selected;
@@ -194,13 +353,13 @@ export class TraceOverlay implements Component {
 		const out: string[] = [];
 		for (let i = this.scroll; i < Math.min(this.rows.length, this.scroll + height); i++) {
 			const row = this.rows[i]!;
-			const line = row.type === "header" ? this.renderHeader(row.turn, width) : this.renderRecord(row.index, width);
+			const line = row.type === "header" ? this.renderHeader(row.turn) : this.renderRecord(row.index, width);
 			out.push(i === this.selected ? this.theme.bg("selectedBg", padVisible(line, width)) : line);
 		}
 		return out;
 	}
 
-	private renderHeader(turn: number, width: number): string {
+	private renderHeader(turn: number): string {
 		const range = this.store.turnRange(turn);
 		const count = range ? range.last - range.first + 1 : 0;
 		const open = !this.collapsed.has(turn);
@@ -228,9 +387,7 @@ export class TraceOverlay implements Component {
 					meta = this.theme.fg("warning", ` ${SPINNER[this.spinnerIdx % SPINNER.length]} streaming`);
 				} else {
 					const timing =
-						a.ttftMs !== undefined
-							? ` TTFT ${formatDuration(a.ttftMs)} · decode ${formatDuration(a.decodeMs)}`
-							: "";
+						a.ttftMs !== undefined ? ` TTFT ${formatDuration(a.ttftMs)} · decode ${formatDuration(a.decodeMs)}` : "";
 					meta = this.theme.fg(
 						"dim",
 						` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok${timing}`,
@@ -268,6 +425,58 @@ export class TraceOverlay implements Component {
 		return `  ${body} ${time}`;
 	}
 
+	/**
+	 * Timeline strip (FR-6): one line, each column a time bucket.
+	 * Assistant spans split TTFT (warning) vs decode (accent); tools ▂;
+	 * user •; compaction ◆. Cursor column shows the selected record.
+	 */
+	private renderTimeline(width: number): string {
+		const range = this.zoom ?? this.fullRange();
+		if (!range || range.end - range.start < 1) return "";
+		const cols = width - 2;
+		const span = range.end - range.start;
+		const cells: { ch: string; color: Parameters<Theme["fg"]>[0]; priority: number }[] = new Array(cols);
+		const bucket = (ts: number) => Math.max(0, Math.min(cols - 1, Math.floor(((ts - range.start) / span) * cols)));
+		const put = (ts0: number, ts1: number, ch: string, color: Parameters<Theme["fg"]>[0], priority: number) => {
+			for (let c = bucket(ts0); c <= bucket(Math.max(ts1, ts0 + span / cols)); c++) {
+				if (!cells[c] || cells[c].priority <= priority) cells[c] = { ch, color, priority };
+			}
+		};
+
+		for (const r of this.store.records) {
+			if (r.kind === "assistant") {
+				const a = r as AssistantRecord;
+				const end = a.ttftMs !== undefined ? a.ts + a.ttftMs + (a.decodeMs ?? 0) : a.ts;
+				if (a.ttftMs !== undefined) {
+					put(a.ts, a.ts + a.ttftMs, "█", "warning", 2);
+					put(a.ts + a.ttftMs, end, "█", "accent", 2);
+				} else {
+					put(a.ts, end, "█", "accent", 2);
+				}
+			} else if (r.kind === "tool") {
+				put(r.ts, r.ts + (r.durationMs ?? 0), "▂", r.status === "error" ? "error" : "muted", 3);
+			} else if (r.kind === "user") {
+				put(r.ts, r.ts, "•", "userMessageText", 1);
+			} else if (r.kind === "compaction") {
+				put(r.ts, r.ts, "◆", "warning", 4);
+			}
+		}
+
+		let line = " ";
+		for (let c = 0; c < cols; c++) {
+			const cell = cells[c];
+			line += cell ? this.theme.fg(cell.color, cell.ch) : this.theme.fg("borderMuted", "·");
+		}
+		// selected-record cursor on the timeline
+		const selTs = this.selectedRecordTs();
+		if (selTs !== undefined && selTs >= range.start && selTs <= range.end) {
+			const c = bucket(selTs);
+			line = replaceVisibleChar(line, 1 + c, this.theme.inverse("▐"));
+		}
+		const zoomTag = this.zoom ? this.theme.fg("warning", " zoomed (0 reset)") : "";
+		return line + zoomTag;
+	}
+
 	private renderInspector(width: number, height: number): string[] {
 		const { record, scroll } = this.inspector!;
 		const lines = inspectorLines(record, this.theme, width);
@@ -288,6 +497,27 @@ function clip(text: string, max: number): string {
 function padVisible(s: string, width: number): string {
 	const w = visibleWidth(s);
 	return w >= width ? s : s + " ".repeat(width - w);
+}
+
+/** Replace the n-th visible character of an ANSI-styled line. Best-effort: only safe for our own timeline line. */
+function replaceVisibleChar(line: string, n: number, replacement: string): string {
+	let visible = 0;
+	let i = 0;
+	while (i < line.length) {
+		if (line[i] === "\x1b") {
+			const end = line.indexOf("m", i);
+			i = end < 0 ? line.length : end + 1;
+			continue;
+		}
+		if (visible === n) {
+			// find end of this (possibly multi-byte) character
+			const next = i + 1;
+			return line.slice(0, i) + replacement + line.slice(next);
+		}
+		visible++;
+		i++;
+	}
+	return line;
 }
 
 function wrapText(text: string, width: number): string[] {
