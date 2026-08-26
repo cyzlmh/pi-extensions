@@ -17,6 +17,17 @@
  *             ({"key": "sk-..."}) and each becomes a "Kimi slot" section;
  *             the slot matching the live registry key is marked (active).
  *
+ *             Vercel AI Gateway is not a pi provider, so its keys are read
+ *             from ~/.ai-cli/config.toml [vercel] (currently disabled in
+ *             EXTRA_SECTIONS).
+ *
+ *             Volcengine Ark / Tencent TokenHub usage needs console-level
+ *             signed credentials (AK/SK) and is not included.
+ *
+ *             Aliyun Token Plan (qwen-token-plan-cn) is disabled: it has no
+ *             key-based usage endpoint and needed a probe chat request, so
+ *             its FAMILIES entry is commented out (helpers kept).
+ *
  *             The official kimi-code CLI's OAuth account (~/.kimi-code) is
  *             reported as "Kimi cli account"; its token is refreshed through
  *             the CLI's own OAuth flow when close to expiry (the rotated
@@ -179,6 +190,29 @@ async function fetchJson(url: string, apiKey: string, timeoutMs = 8000): Promise
 	}
 }
 
+/** Reset timestamp from qwen's 429 message ("… quota will reset at 08-11 06:22:00 UTC."). */
+function qwenResetMs(detail: string): number | undefined {
+	const m = /reset at (\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))? UTC/.exec(detail);
+	if (!m) return undefined;
+	const now = Date.now();
+	const [mo, d, h, mi, s] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5] ?? 0)];
+	let ms = Date.UTC(new Date(now).getUTCFullYear(), mo - 1, d, h, mi, s);
+	// The message has no year; if that lands in the past it means next year.
+	if (ms < now - 86400e3) ms = Date.UTC(new Date(now).getUTCFullYear() + 1, mo - 1, d, h, mi, s);
+	return ms;
+}
+
+/** Quota window from qwen's 429 message ("1-week quota", "1-day quota", "5-hour quota"). */
+function qwenQuotaWindow(detail: string): { windowMs: number; label: string } | undefined {
+	const m = /(\d+)-(week|day|hour)\b/i.exec(detail);
+	if (!m) return undefined;
+	const n = Number(m[1]);
+	const unit = m[2].toLowerCase();
+	if (unit === "week") return { windowMs: n * 7 * 86400e3, label: n === 1 ? "Week" : `${n} weeks` };
+	if (unit === "day") return { windowMs: n * 86400e3, label: n === 1 ? "Day" : `${n} days` };
+	return { windowMs: n * 3600e3, label: `${n}h window` };
+}
+
 /** "8-13 14:52" — compact timestamp for reset annotations. */
 function compactTime(d: Date): string {
 	const pad = (n: number) => String(n).padStart(2, "0");
@@ -190,6 +224,24 @@ function formatReset(iso: unknown): string {
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) return "";
 	return `resets ${compactTime(d)}`;
+}
+
+function maskKey(key: string): string {
+	return key.length <= 8 ? `${key.slice(0, 2)}...` : `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
+/** Minimal TOML extraction: api_keys / api_key from the [vercel] section. */
+function readVercelKeys(): string[] {
+	try {
+		const text = readFileSync(join(homedir(), ".ai-cli", "config.toml"), "utf8");
+		const section = /^\[vercel\]\s*\n([\s\S]*?)(?=^\[|\s*$(?![\s\S]))/m.exec(text)?.[1] ?? "";
+		const list = /api_keys\s*=\s*\[([\s\S]*?)\]/.exec(section);
+		if (list) return [...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+		const single = /api_key\s*=\s*"([^"]+)"/.exec(section);
+		return single ? [single[1]] : [];
+	} catch {
+		return [];
+	}
 }
 
 // ─── Provider families (the only place that knows about specific vendors) ──
@@ -307,6 +359,63 @@ const FAMILIES: ProviderFamily[] = [
 		}
 		return rows;
 	}),
+	// Aliyun Token Plan (qwen-token-plan-cn): temporarily disabled. It has no
+	// key-based usage endpoint, so it was probed with a tiny hardcoded chat
+	// request (qwenResetMs/qwenQuotaWindow below parse the 429 body); re-enable
+	// by restoring this entry.
+	// {
+	// 	provider: "qwen-token-plan-cn",
+	// 	order: 30,
+	// 	query: async (apiKey) => {
+	// 		const url = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+	// 		const started = Date.now();
+	// 		const resp = await fetch(url, {
+	// 			method: "POST",
+	// 			headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+	// 			body: JSON.stringify({
+	// 				model: "qwen3.6-flash",
+	// 				messages: [{ role: "user", content: "hi" }],
+	// 				max_tokens: 1,
+	// 				enable_thinking: false,
+	// 			}),
+	// 			signal: AbortSignal.timeout(15000),
+	// 		});
+	// 		const ms = Date.now() - started;
+	// 		if (resp.ok) {
+	// 			const d = (await resp.json()) as Record<string, any>;
+	// 			const tokens = d?.usage?.total_tokens;
+	// 			return [{
+	// 				label: "Status",
+	// 				text: `key valid, not rate-limited (${ms} ms${tokens ? `, ${tokens} tokens` : ""})`,
+	// 				tone: "ok",
+	// 			}];
+	// 		}
+	// 		const raw = await resp.text();
+	// 		let detail = raw.slice(0, 300);
+	// 		try {
+	// 			const e = (JSON.parse(raw) as Record<string, any>)?.error;
+	// 			if (e) detail = [e.code, e.message].filter(Boolean).join(": ") || detail;
+	// 		} catch {
+	// 		}
+	// 		if (resp.status === 429) {
+	// 			const resetMs = qwenResetMs(detail);
+	// 			const win = qwenQuotaWindow(detail);
+	// 			if (resetMs !== undefined) {
+	// 				return [{
+	// 					label: win?.label ?? "Week",
+	// 					percentLeft: 0,
+	// 					text: "quota exhausted",
+	// 					tone: "warn" as const,
+	// 					hint: win === undefined ? formatReset(resetMs) : undefined,
+	// 					timeline: win !== undefined ? { startMs: resetMs - win.windowMs, endMs: resetMs } : undefined,
+	// 				}];
+	// 			}
+	// 			return [{ label: "Status", text: "rate limited (HTTP 429)", tone: "warn" as const, hint: detail }];
+	// 		}
+	// 		if (resp.status === 401) return [{ label: "Status", text: "key rejected (HTTP 401)", tone: "error" as const, hint: detail }];
+	// 		return [{ label: "Status", text: `probe failed (HTTP ${resp.status})`, tone: "error" as const, hint: detail }];
+	// 	},
+	// },
 	simpleFamily("deepseek", 20, "https://api.deepseek.com/user/balance", (d) => {
 		const infos = d?.balance_infos;
 		if (!Array.isArray(infos) || infos.length === 0) return [{ label: "balance", text: "no balance data", tone: "warn" as const }];
@@ -366,6 +475,27 @@ async function discoverSections(ctx: ExtensionCommandContext): Promise<Section[]
 	}
 	return sections;
 }
+
+const queryVercel: Query = async () => {
+	const keys = readVercelKeys();
+	if (keys.length === 0) return [{ label: "vercel", text: "no keys in ~/.ai-cli/config.toml [vercel]", tone: "warn" }];
+	return Promise.all(
+		keys.map(async (key, i): Promise<Row> => {
+			const label = keys.length > 1 ? `key_${i + 1}` : "key";
+			try {
+				const d = (await fetchJson("https://ai-gateway.vercel.sh/v1/credits", key)) as Record<string, any>;
+				return { label, text: `${maskKey(key)} balance $${d.balance ?? "?"} · used $${d.total_used ?? "?"}` };
+			} catch (err) {
+				return { label, text: `${maskKey(key)} fetch failed: ${err instanceof Error ? err.message : err}`, tone: "error" };
+			}
+		}),
+	);
+};
+
+/** Non-registry sources (not pi providers, keys come from elsewhere). */
+const EXTRA_SECTIONS: Section[] = [
+	// { label: "Vercel AI Gateway", order: 15, query: queryVercel }, // temporarily disabled
+];
 
 // ─── Kimi account slots ───────────────────────────────────────────────────
 
@@ -659,11 +789,16 @@ function secToMs(v: unknown): number | undefined {
 	return n !== undefined ? (n < 1e12 ? n * 1000 : n) : undefined;
 }
 
+const CODEX_QUOTA_RANK: Record<string, number> = { Week: 0, "5h window": 1, Quota: 2 };
+
 /** Format the codex /wham/usage payload into report rows. */
 function formatCodexUsage(d: any): Row[] {
 	const rows: Row[] = [];
 	if (d?.plan_type) rows.push({ label: "Plan", text: String(d.plan_type) });
 	const rl = d?.rate_limit;
+	// Both windows are collected then sorted (Week before 5h window, same as
+	// the kimi/zai/claude sections); the API returns primary(5h) first.
+	const quotaRows: Row[] = [];
 	const pw = rl?.primary_window;
 	if (pw && toNum(pw.used_percent) !== undefined) {
 		const windowSecs = toNum(pw.limit_window_seconds);
@@ -673,17 +808,19 @@ function formatCodexUsage(d: any): Row[] {
 			windowMs: windowSecs !== undefined ? windowSecs * 1000 : 7 * 86400e3,
 		});
 		if (rl?.limit_reached) row.hint = "limit reached";
-		rows.push(row);
+		quotaRows.push(row);
 	}
 	const sw = rl?.secondary_window;
 	if (sw && toNum(sw.used_percent) !== undefined) {
 		const windowSecs = toNum(sw.limit_window_seconds);
-		rows.push(quotaRow(windowSecs === 604800 ? "Week" : windowSecs === 18000 ? "5h window" : "Quota", {
+		quotaRows.push(quotaRow(windowSecs === 604800 ? "Week" : windowSecs === 18000 ? "5h window" : "Quota", {
 			pctLeft: 100 - toNum(sw.used_percent)!,
 			reset: secToMs(sw.reset_at),
 			windowMs: windowSecs !== undefined ? windowSecs * 1000 : undefined,
 		}));
 	}
+	quotaRows.sort((a, b) => (CODEX_QUOTA_RANK[a.label] ?? 3) - (CODEX_QUOTA_RANK[b.label] ?? 3));
+	rows.push(...quotaRows);
 	const credits = d?.credits;
 	if (credits?.has_credits)
 		rows.push({ label: "Credits", text: `$${toNum(credits.balance) ?? "0"} left`, tone: credits.overage_limit_reached ? "warn" : undefined });
@@ -701,7 +838,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("status", {
 		description: "Show remaining quota / balance for all configured providers",
 		handler: async (_args, ctx) => {
-			const sections = await discoverSections(ctx);
+			const sections = [...(await discoverSections(ctx)), ...EXTRA_SECTIONS];
 
 			// Multi-key slots (KIMI_SWITCH_STORE): report every saved account, not
 			// just the currently active key, so usage is visible without switching.

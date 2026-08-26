@@ -1,6 +1,6 @@
 {
   "name": "pi-provider-status",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Show remaining quota and balance for LLM providers in pi — /status panel for Kimi Coding, Zhipu ZAI, MiniMax, DeepSeek, OpenRouter, Claude and Codex subscription windows",
   "keywords": [
     "pi-package",
