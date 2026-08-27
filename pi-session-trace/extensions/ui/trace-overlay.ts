@@ -371,11 +371,18 @@ export class TraceOverlay implements Component {
 		const open = !this.collapsed.has(turn);
 		const tokens = formatTokens(this.store.turnTokens(turn));
 		const ts = range ? formatClock(this.store.records[range.first]!.ts) : "";
-		const arrow = open ? "▼" : "▶";
+		const arrow = open ? "▾" : "▸";
+		// dsh-style dim rail label; stats trail on the right
 		return (
-			this.theme.fg("accent", `${arrow} turn ${turn}`) +
-			this.theme.fg("muted", ` · ${ts} · ${tokens} tok${open ? "" : ` · ${count} records`}`)
+			this.theme.fg("muted", `${arrow} Turn ${turn}`) +
+			this.theme.fg("borderMuted", " ─────") +
+			this.theme.fg("dim", ` ${ts} · ${tokens} tok${open ? "" : ` · ${count} records`}`)
 		);
+	}
+
+	/** dsh-style badge: reverse-video colored tag, fixed width 11 incl. padding. */
+	private badge(label: string, color: Parameters<Theme["fg"]>[0]): string {
+		return this.theme.inverse(this.theme.fg(color, ` ${label} `)) + " ";
 	}
 
 	private renderRecord(index: number, width: number): string {
@@ -384,7 +391,7 @@ export class TraceOverlay implements Component {
 		let body: string;
 		switch (r.kind) {
 			case "user":
-				body = this.theme.fg("userMessageText", "● user      ") + clip(r.text, width - 26);
+				body = this.badge("USER", "userMessageText") + clip(r.text, width - 28);
 				break;
 			case "assistant": {
 				const a = r as AssistantRecord;
@@ -399,29 +406,37 @@ export class TraceOverlay implements Component {
 						` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok${timing}`,
 					);
 				}
-				body = this.theme.fg("text", "● assistant ") + clip(a.text, width - 26) + meta;
+				body = this.badge("ASSISTANT", "accent") + clip(a.text, width - 28) + meta;
 				break;
 			}
 			case "tool": {
 				const t = r as ToolRecord;
-				const icon =
+				const badgeColor =
 					t.status === "ok"
-						? this.theme.fg("success", "✓")
+						? "warning"
 						: t.status === "error"
-							? this.theme.fg("error", "✗")
+							? "error"
 							: t.status === "interrupted"
-								? this.theme.fg("warning", "⏹")
-								: this.theme.fg("warning", SPINNER[this.spinnerIdx % SPINNER.length]);
+								? "muted"
+								: "warning";
+				const state =
+					t.status === "running"
+						? this.theme.fg("warning", SPINNER[this.spinnerIdx % SPINNER.length])
+						: "";
+				// dsh ledger: TOOL name {args} → output preview
+				const outPreview = t.output ? this.theme.fg("dim", ` → ${clip(t.output, Math.max(10, width - 60))}`) : "";
 				body =
-					this.theme.fg("toolTitle", `⚙ ${padVisible(t.name, 10)}`) +
-					clip(t.argsSummary, width - 34) +
-					` ${icon} ${this.theme.fg("dim", formatDuration(t.durationMs))}`;
+					this.badge("TOOL", badgeColor) +
+					this.theme.fg("toolTitle", `${t.name} `) +
+					clip(t.argsSummary, width - 44) +
+					outPreview +
+					` ${state}${this.theme.fg("dim", formatDuration(t.durationMs))}`;
 				break;
 			}
 			case "compaction":
 				body =
-					this.theme.fg("warning", "◆ compaction ") +
-					this.theme.fg("muted", clip(r.summary, width - 30)) +
+					this.badge("COMPACT", "muted") +
+					this.theme.fg("muted", clip(r.summary, width - 34)) +
 					this.theme.fg("dim", ` (${formatTokens(r.tokensBefore)} tok before)`);
 				break;
 			case "marker":
@@ -467,10 +482,10 @@ export class TraceOverlay implements Component {
 					if (a.streaming) {
 						// Waiting for first token so far = TTFT color; decode part accent.
 						const now = Date.now();
-						put(1, a.ts, now, "█", "warning", 2);
+						put(1, a.ts, now, "█", "muted", 2);
 						put(1, now, now, tick, "accent", 5);
 					} else if (a.ttftMs !== undefined) {
-						put(1, a.ts, a.ts + a.ttftMs, "█", "warning", 2); // TTFT
+						put(1, a.ts, a.ts + a.ttftMs, "█", "muted", 2); // TTFT = gray
 						put(1, a.ts + a.ttftMs, a.ts + a.ttftMs + (a.decodeMs ?? 0), "█", "accent", 2); // decode
 					} else {
 						put(1, a.ts, a.ts, "█", "accent", 2);
@@ -496,10 +511,10 @@ export class TraceOverlay implements Component {
 						}
 					};
 					if (r.status === "running") {
-						putTool("█", "muted", 3, Date.now());
-						put(2, Date.now(), Date.now(), tick, "warning", 5);
+						putTool("█", "warning", 3, Date.now());
+						put(2, Date.now(), Date.now(), tick, "accent", 5);
 					} else {
-						putTool("█", r.status === "error" ? "error" : "muted", 3, r.ts + (r.durationMs ?? 0));
+						putTool("█", r.status === "error" ? "error" : "warning", 3, r.ts + (r.durationMs ?? 0));
 					}
 					break;
 				}
@@ -553,6 +568,19 @@ function padVisible(s: string, width: number): string {
 	return w >= width ? s : s + " ".repeat(width - w);
 }
 
+function badgeColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
+	switch (r.kind) {
+		case "user":
+			return "userMessageText";
+		case "assistant":
+			return "accent";
+		case "tool":
+			return r.status === "error" ? "error" : "warning";
+		default:
+			return "muted";
+	}
+}
+
 function wrapText(text: string, width: number): string[] {
 	const out: string[] = [];
 	for (const raw of text.split("\n")) {
@@ -571,7 +599,7 @@ function wrapText(text: string, width: number): string[] {
 
 function inspectorLines(r: TrajectoryRecord, theme: Theme, width: number): string[] {
 	const w = Math.max(20, width - 4);
-	const head = theme.bold(theme.fg("accent", ` ${r.kind} `)) + theme.fg("muted", formatClock(r.ts));
+	const head = theme.inverse(theme.fg(badgeColor(r), ` ${r.kind.toUpperCase()} `)) + theme.fg("muted", ` ${formatClock(r.ts)}`);
 	const lines: string[] = [head, ""];
 	const push = (text: string, color: Parameters<Theme["fg"]>[0] = "text") => {
 		for (const l of wrapText(text, w)) lines.push(theme.fg(color, l));
