@@ -398,13 +398,13 @@ export class TraceOverlay implements Component {
 		let body: string;
 		switch (r.kind) {
 			case "user":
-				body = this.badge("USER", "userMessageText") + clip(r.text, width - 28);
+				body = this.badge("USER", kindColor(r)) + clip(r.text, width - 28);
 				break;
 			case "assistant": {
 				const a = r as AssistantRecord;
 				let meta: string;
 				if (a.streaming) {
-					meta = this.theme.fg("warning", ` ${SPINNER[this.spinnerIdx % SPINNER.length]} streaming`);
+					meta = this.theme.fg("accent", ` ${SPINNER[this.spinnerIdx % SPINNER.length]} streaming`);
 				} else {
 					const timing =
 						a.ttftMs !== undefined ? ` TTFT ${formatDuration(a.ttftMs)} · decode ${formatDuration(a.decodeMs)}` : "";
@@ -413,28 +413,21 @@ export class TraceOverlay implements Component {
 						` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok${timing}`,
 					);
 				}
-				body = this.badge("ASSISTANT", "accent") + clip(a.text, width - 28) + meta;
+				body = this.badge("ASSISTANT", kindColor(r)) + clip(a.text, width - 28) + meta;
 				break;
 			}
 			case "tool": {
 				const t = r as ToolRecord;
-				const badgeColor =
-					t.status === "ok"
-						? "warning"
-						: t.status === "error"
-							? "error"
-							: t.status === "interrupted"
-								? "muted"
-								: "warning";
+				const color = kindColor(r);
 				const state =
 					t.status === "running"
-						? this.theme.fg("warning", SPINNER[this.spinnerIdx % SPINNER.length])
+						? this.theme.fg("accent", SPINNER[this.spinnerIdx % SPINNER.length])
 						: "";
 				// dsh ledger: TOOL name {args} → output preview
 				const outPreview = t.output ? this.theme.fg("dim", ` → ${clip(t.output, Math.max(10, width - 60))}`) : "";
 				body =
-					this.badge("TOOL", badgeColor) +
-					this.theme.fg("toolTitle", `${t.name} `) +
+					this.badge("TOOL", color) +
+					this.theme.fg(color, `${t.name} `) +
 					clip(t.argsSummary, width - 44) +
 					outPreview +
 					` ${state}${this.theme.fg("dim", formatDuration(t.durationMs))}`;
@@ -442,7 +435,7 @@ export class TraceOverlay implements Component {
 			}
 			case "compaction":
 				body =
-					this.badge("COMPACT", "muted") +
+					this.badge("COMPACT", kindColor(r)) +
 					this.theme.fg("muted", clip(r.summary, width - 34)) +
 					this.theme.fg("dim", ` (${formatTokens(r.tokensBefore)} tok before)`);
 				break;
@@ -453,9 +446,6 @@ export class TraceOverlay implements Component {
 		return `  ${body} ${time}`;
 	}
 
-	/**
-	 * Timeline strip (FR-6): three lanes (user / assistant / tool), one column per
-	 * time bucket. Color carries meaning, not shape — TTFT warning vs decode accent,
 	/**
 	 * Timeline strip: three lanes (user / assistant / tool) over the records
 	 * currently visible in the list window — like dsh, which only projects the
@@ -516,7 +506,7 @@ export class TraceOverlay implements Component {
 		for (const { r, idx, p } of pairs) {
 			switch (r.kind) {
 				case "user":
-					markMatch(idx, put(0, p.s, p.s, "●", "userMessageText", 1));
+					markMatch(idx, put(0, p.s, p.s, "●", kindColor(r), 1));
 					break;
 				case "assistant": {
 					const a = r as AssistantRecord;
@@ -532,13 +522,12 @@ export class TraceOverlay implements Component {
 					break;
 				}
 				case "tool": {
-					const color: Cell["color"] = r.status === "error" ? "error" : "syntaxString"; // soft orange (dsh tools hue), not neon warning
-					markMatch(idx, put(2, p.s, p.e, "█", color, 3));
+					markMatch(idx, put(2, p.s, p.e, "█", kindColor(r), 3));
 					if (r.status === "running") put(2, p.e, p.e, tick, "accent", 5);
 					break;
 				}
 				case "compaction":
-					markMatch(idx, put(1, p.s, p.s, "◆", "warning", 4));
+					markMatch(idx, put(1, p.s, p.s, "◆", kindColor(r), 4));
 					break;
 				default:
 					break;
@@ -595,9 +584,10 @@ export class TraceOverlay implements Component {
 
 
 	private renderInspector(width: number, height: number): string[] {
-		const { record, scroll } = this.inspector!;
+		const { record } = this.inspector!;
 		const lines = inspectorLines(record, this.theme, width);
-		const view = lines.slice(scroll, scroll + height);
+		this.inspector!.scroll = Math.max(0, Math.min(this.inspector!.scroll, Math.max(0, lines.length - height)));
+		const view = lines.slice(this.inspector!.scroll, this.inspector!.scroll + height);
 		if (view.length === 0) return [this.theme.fg("muted", "  (empty)")];
 		return view;
 	}
@@ -617,14 +607,26 @@ function padVisible(s: string, width: number): string {
 }
 
 function badgeColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
+	return kindColor(r);
+}
+
+/**
+ * Single source of truth for record-kind colors — used by list badges, the
+ * inspector header, and timeline lane cells, so a record always reads the
+ * same hue everywhere (dsh: lane-specific hues).
+ */
+function kindColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 	switch (r.kind) {
 		case "user":
 			return "userMessageText";
 		case "assistant":
 			return "accent";
 		case "tool":
-			return r.status === "error" ? "error" : "warning";
-		default:
+			// soft orange (dsh tools hue); warning would be neon yellow in dark theme
+			return r.status === "error" ? "error" : r.status === "interrupted" ? "muted" : "syntaxString";
+		case "compaction":
+			return "warning";
+		case "marker":
 			return "muted";
 	}
 }
