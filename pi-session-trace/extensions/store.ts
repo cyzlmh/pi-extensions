@@ -13,6 +13,12 @@ export class TraceStore {
 		this.notify();
 	}
 
+	/** Drop all records (session switch: /resume, /new, /fork trigger a fresh backfill). */
+	reset(): void {
+		this.records.length = 0;
+		this.notify();
+	}
+
 	/** Update an existing record in place (tool completion, streaming growth). */
 	update(id: string, patch: Partial<TrajectoryRecord>): void {
 		const rec = this.records.find((r) => r.id === id);
@@ -23,13 +29,6 @@ export class TraceStore {
 
 	get(id: string): TrajectoryRecord | undefined {
 		return this.records.find((r) => r.id === id);
-	}
-
-	/** Distinct turn numbers present, ascending. */
-	turns(): number[] {
-		const seen = new Set<number>();
-		for (const r of this.records) seen.add(r.turn);
-		return [...seen].sort((a, b) => a - b);
 	}
 
 	/** Sum of assistant input+output tokens within a turn. */

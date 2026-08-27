@@ -35,6 +35,7 @@ export class TraceOverlay implements Component {
 	private matchesDirty = true;
 	private matches: number[] = [];
 	private openedAt = Date.now();
+	private unsub: () => void;
 	private projection: {
 		version: number;
 		map: Map<TrajectoryRecord, { s: number; e: number }>;
@@ -50,7 +51,7 @@ export class TraceOverlay implements Component {
 		private done: () => void,
 	) {
 		this.rebuildRows();
-		this.store.subscribe(() => {
+		this.unsub = this.store.subscribe(() => {
 			this.rebuildRows();
 			this.matchesDirty = true;
 			if (this.follow) this.selected = Math.max(0, this.rows.length - 1);
@@ -101,14 +102,22 @@ export class TraceOverlay implements Component {
 	// ------------------------------------------------------------------ rows
 
 
+	/**
+	 * Single O(n) pass — records are appended chronologically so turn numbers
+	 * are non-decreasing. Called on every store notification (per token while
+	 * streaming), so it must stay linear.
+	 */
 	private rebuildRows(): void {
 		const rows: Row[] = [];
-		for (const turn of this.store.turns()) {
-			const range = this.store.turnRange(turn);
-			if (!range) continue;
-			rows.push({ type: "header", turn });
-			if (this.collapsed.has(turn)) continue;
-			for (let i = range.first; i <= range.last; i++) rows.push({ type: "record", index: i });
+		const recs = this.store.records;
+		let curTurn = -1;
+		for (let i = 0; i < recs.length; i++) {
+			const t = recs[i]!.turn;
+			if (t !== curTurn) {
+				curTurn = t;
+				rows.push({ type: "header", turn: t });
+			}
+			if (!this.collapsed.has(t)) rows.push({ type: "record", index: i });
 		}
 		this.rows = rows;
 		if (this.selected >= rows.length) this.selected = Math.max(0, rows.length - 1);
@@ -122,6 +131,7 @@ export class TraceOverlay implements Component {
 
 		if (matchesKey(data, "escape") || data === "q") {
 			if (this.animTimer !== undefined) clearTimeout(this.animTimer);
+			this.unsub(); // stop rebuilding rows on every token after close
 			this.done();
 			return;
 		}

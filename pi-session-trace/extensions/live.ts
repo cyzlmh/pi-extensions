@@ -51,6 +51,12 @@ export class LiveSource {
 
 	/** Fill the store from already-persisted session entries (resume/fork/reload). */
 	private backfill(ctx: ExtensionContext): void {
+		// session_start fires on every session switch (startup/resume/new/fork/reload)
+		// — reset everything or the previous session's records/state bleed through.
+		this.converter = new EntryConverter();
+		this.toolRecordIds.clear();
+		this.openAssistant = undefined;
+		this.store.reset();
 		const records: TrajectoryRecord[] = [];
 		for (const entry of ctx.sessionManager.getEntries()) records.push(...this.converter.push(entry));
 		for (const [callId, recId] of this.converter.pendingToolIds()) this.toolRecordIds.set(callId, recId);
