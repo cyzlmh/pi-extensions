@@ -311,8 +311,8 @@ export class TraceOverlay implements Component {
 		const termRows = process.stdout.rows ?? 24;
 		const narrow = width < 80;
 		const showTimeline = !narrow && this.store.records.length > 1;
-		const chrome = 4 + (showTimeline ? 4 : 0); // timeline: 3 lanes + time axis
-		const bodyHeight = Math.max(4, Math.floor(termRows * 0.86) - chrome);
+		const chrome = (showTimeline ? 4 : 0) + 4; // title+sep, sep+hint; timeline = 3 lanes + axis
+		const bodyHeight = Math.max(4, termRows - chrome);
 
 		const title =
 			this.theme.bold(this.theme.fg("accent", ` trace `)) +
@@ -326,6 +326,7 @@ export class TraceOverlay implements Component {
 			if (this.selected >= this.scroll + bodyHeight) this.scroll = this.selected - bodyHeight + 1;
 		}
 		const body = this.inspector ? this.renderInspector(width, bodyHeight) : this.renderList(width, bodyHeight);
+		while (body.length < bodyHeight) body.push(""); // pad to full height — the overlay covers the whole screen
 
 		const lines = [title, sep, ...body];
 		if (showTimeline) lines.push(...this.renderTimeline(width, bodyHeight));

@@ -7,7 +7,10 @@ import { TraceStore } from "./store.ts";
 import { SessionPicker } from "./ui/session-picker.ts";
 import { TraceOverlay } from "./ui/trace-overlay.ts";
 
-const OVERLAY_OPTS = { overlay: true, overlayOptions: { anchor: "center", width: "92%", maxHeight: "86%" } } as const;
+// Full-screen takeover: pi-tui composites overlays onto terminal lines with no
+// added chrome, so 100%×100% + a body padded to terminal height = a dedicated
+// screen (chat behind is fully covered), esc/q returns to chat.
+const OVERLAY_OPTS = { overlay: true, overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%" } } as const;
 
 export default function sessionTrace(pi: ExtensionAPI) {
 	// Live collection starts at extension load, so /trace is complete whenever opened.
