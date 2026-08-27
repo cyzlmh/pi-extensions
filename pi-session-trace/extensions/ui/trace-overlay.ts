@@ -17,6 +17,8 @@ type Row = { type: "header"; turn: number } | { type: "record"; index: number };
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /** Zoom window halves/doubles around the selected record's timestamp. */
 const ZOOM_FACTOR = 3;
+/** Zoom floor: one column never goes below this — the minimum resolvable granularity. */
+const MIN_COL_MS = 100;
 const OPEN_ANIM_MS = 120;
 
 export class TraceOverlay implements Component {
@@ -38,6 +40,7 @@ export class TraceOverlay implements Component {
 	private matches: number[] = [];
 	/** Timeline zoom window [startMs, endMs]; null = full range. */
 	private zoom: { start: number; end: number } | null = null;
+	private timelineCols = 0;
 	private openedAt = Date.now();
 
 	constructor(
@@ -263,7 +266,10 @@ export class TraceOverlay implements Component {
 		const range = this.fullRange();
 		if (!range) return;
 		const center = this.selectedRecordTs() ?? (range.start + range.end) / 2;
-		const span = Math.max(1000, (this.zoom ? this.zoom.end - this.zoom.start : range.end - range.start) * factor);
+		const cols = this.timelineCols || 80;
+		const minSpan = cols * MIN_COL_MS; // zoom floor: minimum resolvable granularity
+		let span = (this.zoom ? this.zoom.end - this.zoom.start : range.end - range.start) * factor;
+		span = Math.max(minSpan, span);
 		if (span >= range.end - range.start) {
 			this.zoom = null;
 		} else {
@@ -427,13 +433,14 @@ export class TraceOverlay implements Component {
 
 	/**
 	 * Timeline strip (FR-6): three lanes (user / assistant / tool), one column per
-	 * time bucket. Char density stands in for opacity — TTFT ░ vs decode █ in the
-	 * same hue; running records pulse a spinner tick at their right edge; errors red.
+	 * time bucket. Color carries meaning, not shape — TTFT warning vs decode accent,
+	 * tool errors red; running records pulse a spinner tick at their right edge.
 	 */
 	private renderTimeline(width: number): string[] {
 		const range = this.zoom ?? this.fullRange();
 		if (!range || range.end - range.start < 1) return [];
 		const cols = Math.max(10, width - 9); // " user │" … "│"
+		this.timelineCols = cols;
 		const span = range.end - range.start;
 		const bucket = (ts: number) => Math.max(0, Math.min(cols - 1, Math.floor(((ts - range.start) / span) * cols)));
 
@@ -458,11 +465,13 @@ export class TraceOverlay implements Component {
 				case "assistant": {
 					const a = r as AssistantRecord;
 					if (a.streaming) {
-						put(1, a.ts, Date.now(), "░", "accent", 2);
-						put(1, Date.now(), Date.now(), tick, "accent", 5);
+						// Waiting for first token so far = TTFT color; decode part accent.
+						const now = Date.now();
+						put(1, a.ts, now, "█", "warning", 2);
+						put(1, now, now, tick, "accent", 5);
 					} else if (a.ttftMs !== undefined) {
-						put(1, a.ts, a.ts + a.ttftMs, "░", "accent", 2); // TTFT = dimmed shade
-						put(1, a.ts + a.ttftMs, a.ts + a.ttftMs + (a.decodeMs ?? 0), "█", "accent", 2);
+						put(1, a.ts, a.ts + a.ttftMs, "█", "warning", 2); // TTFT
+						put(1, a.ts + a.ttftMs, a.ts + a.ttftMs + (a.decodeMs ?? 0), "█", "accent", 2); // decode
 					} else {
 						put(1, a.ts, a.ts, "█", "accent", 2);
 					}
@@ -487,10 +496,10 @@ export class TraceOverlay implements Component {
 						}
 					};
 					if (r.status === "running") {
-						putTool("▄", "muted", 3, Date.now());
+						putTool("█", "muted", 3, Date.now());
 						put(2, Date.now(), Date.now(), tick, "warning", 5);
 					} else {
-						putTool("▄", r.status === "error" ? "error" : "muted", 3, r.ts + (r.durationMs ?? 0));
+						putTool("█", r.status === "error" ? "error" : "muted", 3, r.ts + (r.durationMs ?? 0));
 					}
 					break;
 				}
