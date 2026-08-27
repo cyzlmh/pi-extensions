@@ -84,3 +84,17 @@
 | token 流式高峰 | 界面无闪烁、滚动位置不跳 |
 | 依赖 | 零 server 进程、零端口，`pi install` 即用 |
 | 主观 | 用过 dsh trajectory 的人不觉得降级 |
+
+---
+
+## 决策变更（2026-04）：移除内置会话选择器
+
+**变更**：删除 `/trace pick`、`/trace <id>`、SessionPicker、JSONL 文件扫描/流式解析（约 400 行）。`/trace` 只看当前会话。
+
+**理由**：
+1. dsh 原版的 layering 也是「先选 session → 再看 trace」，选择器不属于 trajectory 视图
+2. pi 原生已有 session 切换（`/resume` / `--resume` / `/fork`）；`session_start` 触发 backfill，`sessionManager.getEntries()` 补全完整历史——**pi 自己就是 replay 引擎**，内置 picker 是重复造轮子
+
+**保留**：EntryConverter（backfill 命脉）、TraceStore、overlay 全套。历史会话查看路径 = `/resume` 切换 → `/trace`。
+
+**代价**：无法"只读窥看"别的会话（/resume 是切换）；想看旧会话又不打断当前工作需另开终端。接受。

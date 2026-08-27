@@ -1,6 +1,6 @@
 # pi-session-trace
 
-A pure-TUI session trajectory viewer for [pi](https://github.com/earendil-works/pi), inspired by DeepSeek Harness (`dsh`)'s trajectory view. One `/trace` command — live tail of the current session, or replay of any historical session — with no server, no browser, and no extra storage (pi's own session JSONL is the persistence layer).
+A pure-TUI session trajectory viewer for [pi](https://github.com/earendil-works/pi), inspired by DeepSeek Harness (`dsh`)'s trajectory view. One `/trace` command opens a full-screen trace of the **current** session — no server, no browser, no extra storage (pi's own session JSONL is the persistence layer).
 
 ## Install
 
@@ -12,11 +12,9 @@ Then `/reload` or restart pi.
 
 ## Usage
 
-| Command | What it does |
-|---|---|
-| `/trace` | Live view of the **current** session (collects from extension load; resume/fork/reload backfill full history) |
-| `/trace pick` | Session picker — fuzzy-filter all historical sessions, enter to open |
-| `/trace <id-prefix>` | Replay one historical session directly |
+`/trace` — full-screen trajectory of the current session. Collection starts at extension load, and pi's session lifecycle (resume/fork/reload) backfills full history automatically.
+
+**Historical sessions**: use pi's native `/resume` (or `pi --resume`) to switch to an old session — the trace backfills its complete trajectory on entry. Session selection is pi's job; this extension only does the trajectory view (same layering as dsh).
 
 ## Keys
 
@@ -39,8 +37,8 @@ Then `/reload` or restart pi.
 
 ## Design notes
 
-- **Local-first & read-only**: never writes to or controls the session; replays read `~/.pi/agent/sessions/` directly
-- **Live + replay share one record model** (`TrajectoryRecord`); live events stream in at a ~16 ms coalesced render tick so heavy token streams don't flicker the UI
+- **Local-first & read-only**: never writes to or controls the session, never touches the filesystem — all data comes from pi's event bus and `sessionManager`
+- **One record model** (`TrajectoryRecord`); live events stream in at a ~16 ms coalesced render tick so heavy token streams don't flicker the UI
 - **Colors come 100% from pi's theme tokens** — it adapts to your theme automatically
 
 ## License

@@ -11,7 +11,7 @@ import type {
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
-import { EntryConverter } from "./replay.ts";
+import { EntryConverter } from "./converter.ts";
 import type { TraceStore } from "./store.ts";
 import type { TrajectoryRecord } from "./types.ts";
 
@@ -165,7 +165,7 @@ export class LiveSource {
 }
 
 // ---------------------------------------------------------------------------
-// content helpers (mirror replay.ts; message objects, not entries)
+// content helpers (mirror converter.ts; message objects, not entries)
 
 type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never;
 
