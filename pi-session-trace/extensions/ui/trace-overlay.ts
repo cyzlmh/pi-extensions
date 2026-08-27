@@ -471,10 +471,14 @@ export class TraceOverlay implements Component {
 			const row = this.rows[i]!;
 			if (row.type === "record") visible.push(this.store.records[row.index]!);
 		}
-		const spans = visible.map((r) => proj.map.get(r)).filter((p) => p !== undefined);
-		if (spans.length === 0) return [];
-		const start = Math.min(...spans.map((p) => p.s));
-		let end = Math.max(...spans.map((p) => p.e));
+		const pairs: { r: TrajectoryRecord; p: { s: number; e: number } }[] = [];
+		for (const r of visible) {
+			const p = proj.map.get(r);
+			if (p) pairs.push({ r, p });
+		}
+		if (pairs.length === 0) return [];
+		const start = Math.min(...pairs.map((x) => x.p.s));
+		let end = Math.max(...pairs.map((x) => x.p.e));
 		if (end - start < 1000) end = start + 1000;
 		const range = { start, end };
 		const cols = Math.max(10, width - 9); // " user │" … "│"
@@ -500,9 +504,7 @@ export class TraceOverlay implements Component {
 		};
 		const tick = SPINNER[this.spinnerIdx % SPINNER.length];
 
-		for (let i = 0; i < visible.length; i++) {
-			const r = visible[i]!;
-			const p = spans[i]!;
+		for (const { r, p } of pairs) {
 			switch (r.kind) {
 				case "user":
 					put(0, p.s, p.s, "●", "userMessageText", 1);
@@ -534,6 +536,20 @@ export class TraceOverlay implements Component {
 			}
 		}
 
+		/**
+		 * Ownership post-pass: a tool glyph always claims a full column (even a
+		 * 0.0s tool paints one), so the assistant lane must yield every column a
+		 * tool touches — otherwise sub-column tools look like overlaps. The lanes
+		 * are a sequence diagram, not an area chart: strict alternation beats
+		 * pixel-perfect coverage. Diamonds and spinner ticks are never erased.
+		 */
+		for (let c = 0; c < cols; c++) {
+			const asstCell = lanes[1]![c];
+			if (lanes[2]![c] && asstCell && asstCell.priority <= 2) {
+				lanes[1]![c] = undefined;
+			}
+		}
+
 		const selTs = this.selectedRecordTs();
 		const cursorCol = selTs !== undefined && selTs >= range.start && selTs <= range.end ? bucket(selTs) : -1;
 		const labels = ["user", "asst", "tool"];
@@ -550,8 +566,8 @@ export class TraceOverlay implements Component {
 			);
 		}
 		// Axis: real clock of the visible window + its busy (idle-compressed) length.
-		const wallStart = visible[0]!.ts;
-		const wallEnd = Math.max(...visible.map((r) => this.recordEnd(r)));
+		const wallStart = pairs[0]!.r.ts;
+		const wallEnd = Math.max(...pairs.map((x) => this.recordEnd(x.r)));
 		const mode = `busy ${formatDuration(range.end - range.start)} / wall ${formatDuration(wallEnd - wallStart)}`;
 		const left = `       └${formatClock(wallStart)} `;
 		const right = ` ${formatClock(wallEnd)}┘`;
