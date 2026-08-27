@@ -532,7 +532,7 @@ export class TraceOverlay implements Component {
 					break;
 				}
 				case "tool": {
-					const color: Cell["color"] = r.status === "error" ? "error" : "warning";
+					const color: Cell["color"] = r.status === "error" ? "error" : "syntaxString"; // soft orange (dsh tools hue), not neon warning
 					markMatch(idx, put(2, p.s, p.e, "█", color, 3));
 					if (r.status === "running") put(2, p.e, p.e, tick, "accent", 5);
 					break;
