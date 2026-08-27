@@ -1,0 +1,56 @@
+# Auto-publish on merge to main.
+#
+# Release flow: bump `version` in a package's package.json, commit to main.
+# For every package, if that version is not yet on npm, publish it.
+# Idempotent: re-running publishes nothing; unchanged packages are skipped.
+#
+# Requires repo secret NPM_TOKEN — an npm Automation token
+# (bypasses OTP for CI publishing). Create at:
+#   https://www.npmjs.com/settings/<user>/tokens/grant-new?type=automation
+# then: gh secret set NPM_TOKEN
+
+name: publish
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish changed packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in */package.json; do
+            dir=$(dirname "$pkg")
+            name=$(node -p "require('./$pkg').name")
+            version=$(node -p "require('./$pkg').version")
+            private=$(node -p "require('./$pkg').private || false")
+            if [ "$private" = "true" ]; then
+              echo "skip $name (private)"
+              continue
+            fi
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip $name@$version (already published)"
+              continue
+            fi
+            echo "publishing $name@$version"
+            (cd "$dir" && npm publish --access public --provenance=false)
+          done

@@ -18,6 +18,15 @@ My collection of extensions for [pi](https://github.com/earendil-works/pi), the 
 pi install npm:<package-name>
 ```
 
+## Releasing
+
+Push to `main` publishes automatically ([workflow](.github/workflows/publish.yml)):
+bump `version` in the package's `package.json`, merge to `main` — any package
+whose version isn't on npm yet gets published. No tags, no manual steps.
+
+One-time setup: set the `NPM_TOKEN` repo secret to an npm **Automation**
+token (bypasses OTP in CI).
+
 ## Feedback
 
 Open an issue with the package name in the title (e.g. `[pi-bg-tasks] …`).
