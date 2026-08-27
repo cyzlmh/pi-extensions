@@ -523,7 +523,7 @@ export class TraceOverlay implements Component {
 		for (const { r, idx, p } of pairs) {
 			switch (r.kind) {
 				case "user":
-					markMatch(idx, put(0, p.s, p.s, "●", kindColor(r), 1));
+					markMatch(idx, put(0, p.s, p.s, "█", kindColor(r), 1)); // point event, rectangle glyph like dsh
 					break;
 				case "assistant": {
 					const a = r as AssistantRecord;
@@ -612,7 +612,11 @@ export class TraceOverlay implements Component {
 				const cell = lanes[lane]![c];
 			const inCursor = cur0 >= 0 && c >= cur0 && c <= cur1;
 				let s: string;
-				if (inCursor) s = this.theme.inverse(cell ? cell.ch : " ");
+				if (inCursor)
+					// Subtle tint, glyphs keep their color — dsh tints the whole span.
+					// toolPendingBg: cool indigo, distinct from the scrollbarThumb
+					// turn bands (selectedBg aliases scrollbarThumb in dark theme).
+					s = this.theme.bg("toolPendingBg", cell ? this.theme.fg(cell.color, cell.ch) : " ");
 				else if (cell && searching && !matchCols.has(c)) s = this.theme.fg("dim", cell.ch);
 				else s = cell ? this.theme.fg(cell.color, cell.ch) : " ";
 				// Turn boundary band: a dim bg stripe through all three lanes —
