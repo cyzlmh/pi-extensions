@@ -468,15 +468,31 @@ export class TraceOverlay implements Component {
 	 */
 	private renderTimeline(width: number, listHeight: number): string[] {
 		const proj = this.ensureProjection();
-		const visible: { r: TrajectoryRecord; idx: number }[] = [];
+		// Window: the contiguous record-index span covered by the visible list
+		// rows — collapsed turns' records STAY in the window (dsh: the timeline
+		// never reflows on collapse; a header extends the window via its turn's
+		// record range).
+		let lo = Infinity;
+		let hi = -Infinity;
 		for (let i = this.scroll; i < Math.min(this.rows.length, this.scroll + listHeight); i++) {
 			const row = this.rows[i]!;
-			if (row.type === "record") visible.push({ r: this.store.records[row.index]!, idx: row.index });
+			if (row.type === "record") {
+				lo = Math.min(lo, row.index);
+				hi = Math.max(hi, row.index);
+			} else {
+				const tr = this.store.turnRange(row.turn);
+				if (tr) {
+					lo = Math.min(lo, tr.first);
+					hi = Math.max(hi, tr.last);
+				}
+			}
 		}
+		if (hi < lo) return [];
 		const pairs: { r: TrajectoryRecord; idx: number; p: { s: number; e: number } }[] = [];
-		for (const { r, idx } of visible) {
+		for (let i = lo; i <= hi; i++) {
+			const r = this.store.records[i]!;
 			const p = proj.map.get(r);
-			if (p) pairs.push({ r, idx, p });
+			if (p) pairs.push({ r, idx: i, p });
 		}
 		if (pairs.length === 0) return [];
 		const start = Math.min(...pairs.map((x) => x.p.s));
@@ -561,6 +577,17 @@ export class TraceOverlay implements Component {
 			}
 		}
 
+		// True turn boundaries inside the window: the first column of each turn
+		// whose start record is in [lo, hi] (a turn opened before lo is not a
+		// boundary — the window merely starts mid-turn).
+		const boundaryCols = new Set<number>();
+		const recs = this.store.records;
+		for (let i = lo; i <= hi; i++) {
+			if (i > lo && recs[i]!.turn === recs[i - 1]!.turn) continue;
+			const p = proj.map.get(recs[i]!);
+			if (p) boundaryCols.add(bucket(p.s));
+		}
+
 		const selTs = this.selectedRecordTs();
 		const cursorCol = selTs !== undefined && selTs >= range.start && selTs <= range.end ? bucket(selTs) : -1;
 		const labels = ["user", "asst", "tool"];
@@ -569,9 +596,15 @@ export class TraceOverlay implements Component {
 			let body = "";
 			for (let c = 0; c < cols; c++) {
 				const cell = lanes[lane]![c];
-				if (c === cursorCol) body += this.theme.inverse(cell ? cell.ch : " ");
-				else if (cell && searching && !matchCols.has(c)) body += this.theme.fg("dim", cell.ch);
-				else body += cell ? this.theme.fg(cell.color, cell.ch) : " ";
+				let s: string;
+				if (c === cursorCol) s = this.theme.inverse(cell ? cell.ch : " ");
+				else if (cell && searching && !matchCols.has(c)) s = this.theme.fg("dim", cell.ch);
+				else s = cell ? this.theme.fg(cell.color, cell.ch) : " ";
+				// Turn boundary band: a dim bg stripe through all three lanes —
+				// glyphs survive, the eye gets a hard vertical edge (the cursor
+				// column keeps its inverse highlight instead).
+				if (boundaryCols.has(c) && c !== cursorCol) s = this.theme.bg("scrollbarThumb", s);
+				body += s;
 			}
 			lines.push(
 				this.theme.fg("dim", ` ${labels[lane]!} `) + this.theme.fg("borderMuted", "│") + body + this.theme.fg("borderMuted", "│"),
@@ -587,11 +620,8 @@ export class TraceOverlay implements Component {
 		const fill = Math.max(1, cols - visibleWidth(left + mode + right) + 2);
 		const leftW = visibleWidth(left);
 		const fillChars: string[] = new Array(fill).fill("─");
-		let prevTurn = -1;
-		for (const { r, p } of pairs) {
-			if (r.turn === prevTurn) continue;
-			prevTurn = r.turn;
-			const idx = 7 + bucket(p.s) - leftW; // lanes start 7 chars in (" user │")
+		for (const c of boundaryCols) {
+			const idx = 7 + c - leftW; // lanes start 7 chars in (" user │")
 			if (idx >= 0 && idx < fill) fillChars[idx] = "┬";
 		}
 		// Emit the fill as color runs: ─ in borderMuted, ┬ in dim.
