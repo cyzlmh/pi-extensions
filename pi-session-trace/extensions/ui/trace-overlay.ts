@@ -531,10 +531,10 @@ export class TraceOverlay implements Component {
 						put(1, p.s, p.e, "█", "muted", 2); // in flight
 						markMatch(idx, put(1, p.e, p.e, tick, "accent", 5));
 					} else if (a.ttftMs !== undefined) {
-						put(1, p.s, p.s + a.ttftMs, "█", "thinkingMedium", 2); // TTFT = dim ramp step
-						markMatch(idx, put(1, p.s + a.ttftMs, p.e, "█", "thinkingHigh", 2)); // decode
+						put(1, p.s, p.s + a.ttftMs, "█", "thinkingLow", 2); // TTFT = dim ramp step
+						markMatch(idx, put(1, p.s + a.ttftMs, p.e, "█", "accent", 2)); // decode
 					} else {
-						markMatch(idx, put(1, p.s, p.e, "█", "thinkingHigh", 2)); // replay: approximated LLM span
+						markMatch(idx, put(1, p.s, p.e, "█", "accent", 2)); // replay: approximated LLM span
 					}
 					break;
 				}
@@ -582,6 +582,7 @@ export class TraceOverlay implements Component {
 		// not just its start column). Header selection spans the entire turn.
 		let cur0 = -1;
 		let cur1 = -1;
+		let curLane = -1; // -1 = all lanes; record rows tint only their own lane
 		const selRow = this.rows[this.selected];
 		if (selRow) {
 			const spanOf = (r: TrajectoryRecord): { s: number; e: number } => proj.map.get(r) ?? { s: r.ts, e: r.ts };
@@ -602,6 +603,10 @@ export class TraceOverlay implements Component {
 				cur0 = bucket(selS);
 				cur1 = selE > selS ? Math.ceil(((selE - range.start) / span) * cols) - 1 : cur0;
 				if (cur1 < cur0) cur1 = cur0; // sub-column span rounds to its start bucket
+				if (selRow.type === "record") {
+					const k = this.store.records[selRow.index]!.kind;
+					curLane = k === "user" ? 0 : k === "tool" ? 2 : 1;
+				}
 			}
 		}
 		const labels = ["user", "asst", "tool"];
@@ -610,13 +615,13 @@ export class TraceOverlay implements Component {
 			let body = "";
 			for (let c = 0; c < cols; c++) {
 				const cell = lanes[lane]![c];
-			const inCursor = cur0 >= 0 && c >= cur0 && c <= cur1;
+			const inCursor = cur0 >= 0 && c >= cur0 && c <= cur1 && (curLane < 0 || curLane === lane);
 				let s: string;
 				if (inCursor)
-					// Subtle tint, glyphs keep their color — dsh tints the whole span.
-					// toolPendingBg: cool indigo, distinct from the scrollbarThumb
-					// turn bands (selectedBg aliases scrollbarThumb in dark theme).
-					s = this.theme.bg("toolPendingBg", cell ? this.theme.fg(cell.color, cell.ch) : " ");
+					// selectedBg band + glyphs lifted to text brightness — strong
+					// enough to read, still calmer than inverse. Lane-scoped for
+					// record rows; turn headers tint all three lanes.
+					s = this.theme.bg("selectedBg", cell ? this.theme.fg("text", cell.ch) : " ");
 				else if (cell && searching && !matchCols.has(c)) s = this.theme.fg("dim", cell.ch);
 				else s = cell ? this.theme.fg(cell.color, cell.ch) : " ";
 				// Turn boundary band: a dim bg stripe through all three lanes —
@@ -703,10 +708,10 @@ function badgeColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 function kindColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 	switch (r.kind) {
 		case "user":
-			return "syntaxKeyword"; // dsh: user spans are business-blue
+			return "borderAccent"; // dsh: user spans are vivid blue — a bright point event
 		case "assistant":
-			// dsh: assistant decode = brand blue-violet; thinkingHigh is the theme's violet ramp
-			return "thinkingHigh";
+			// pi's own calm teal — the assistant IS pi; TTFT rides the accent→thinkingLow ramp
+			return "accent";
 		case "tool":
 			// soft orange (dsh tools hue); warning would be neon yellow in dark theme
 			return r.status === "error" ? "error" : r.status === "interrupted" ? "muted" : "syntaxString";
