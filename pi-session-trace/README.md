@@ -21,6 +21,9 @@ Then `/reload` or restart pi.
 | Key | Action |
 |---|---|
 | `j`/`k` / `↑`/`↓` | Move selection |
+| `pgUp`/`pgDn` | Half-page jump |
+| `]` / `[` | Next / previous turn header |
+| `c` / `e` | Fold / expand **all** turns |
 | `enter` | Inspect record (summary → full I/O) / fold on turn headers |
 | `space` | Fold / unfold a turn |
 | `/` | Search record contents, `n`/`N` jump between matches |

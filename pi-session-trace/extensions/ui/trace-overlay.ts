@@ -135,9 +135,33 @@ export class TraceOverlay implements Component {
 			this.done();
 			return;
 		}
+		const bodyHeight = Math.max(4, (process.stdout.rows ?? 24) - 8);
 		if (matchesKey(data, "up") || data === "k") this.move(-1);
 		else if (matchesKey(data, "down") || data === "j") this.move(1);
-		else if (data === "g") {
+		else if (matchesKey(data, "pageUp")) this.move(-bodyHeight);
+		else if (matchesKey(data, "pageDown")) this.move(bodyHeight);
+		else if (data === "c" || data === "e") {
+			// fold/expand every turn at once — dsh's collapse-all toggle
+			const collapse = data === "c";
+			this.collapsed.clear();
+			if (collapse) for (const row of this.rows) if (row.type === "header") this.collapsed.add(row.turn);
+			this.rebuildRows();
+		} else if (data === "]") {
+			// next turn header
+			for (let i = this.selected + 1; i < this.rows.length; i++)
+				if (this.rows[i]!.type === "header") {
+					this.select(i);
+					this.follow = false;
+					break;
+				}
+		} else if (data === "[") {
+			for (let i = this.selected - 1; i >= 0; i--)
+				if (this.rows[i]!.type === "header") {
+					this.select(i);
+					this.follow = false;
+					break;
+				}
+		} else if (data === "g") {
 			this.select(0);
 			this.follow = false;
 		} else if (data === "G") {
@@ -344,7 +368,10 @@ export class TraceOverlay implements Component {
 	private renderHint(): string {
 		if (this.searchMode) return this.theme.fg("text", ` /${this.query}`) + this.theme.fg("muted", "█");
 		if (this.inspector) return this.theme.fg("muted", " j/k scroll · esc back");
-		let hint = this.theme.fg("muted", " j/k move · enter inspect · space fold · / search · g/G top/end · q close");
+		let hint = this.theme.fg(
+			"muted",
+			" j/k move · enter/space fold+inspect · c/e fold all · [/] turns · / search · g/G top/end · q close",
+		);
 		this.ensureMatches();
 		if (this.query && this.matches.length > 0) {
 			const rank = this.matches.filter((m) => m <= this.selected).length || this.matches.length;
