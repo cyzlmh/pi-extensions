@@ -109,6 +109,8 @@ export interface ReplayResult {
 export class EntryConverter {
 	private turn = 0;
 	private counter = 0;
+	/** Latest event timestamp seen — used to approximate assistant span starts. */
+	private lastEventTs = 0;
 	/** toolCallId → pending ToolRecord awaiting its toolResult. */
 	private pendingTools = new Map<string, ToolRecord>();
 
@@ -129,6 +131,8 @@ export class EntryConverter {
 		const out: TrajectoryRecord[] = [];
 		const ts = Date.parse(entry.timestamp ?? "") || 0;
 		const id = typeof entry.id === "string" ? entry.id : `gen-${this.counter++}`;
+		const prevTs = this.lastEventTs;
+		if (ts > 0) this.lastEventTs = Math.max(this.lastEventTs, ts);
 
 		switch (entry.type) {
 			case "message": {
@@ -156,6 +160,8 @@ export class EntryConverter {
 						usage: msg.usage,
 						stopReason: msg.stopReason,
 						interrupted: msg.stopReason === "aborted" || msg.stopReason === "error",
+						// Approximate span: LLM call started right after the previous event.
+						startTs: prevTs > 0 && prevTs < ts ? prevTs : undefined,
 					});
 					for (const call of extractToolCalls(msg.content)) {
 						const rec: ToolRecord = {

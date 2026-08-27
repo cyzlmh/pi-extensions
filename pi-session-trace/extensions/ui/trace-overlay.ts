@@ -38,10 +38,18 @@ export class TraceOverlay implements Component {
 	private query = "";
 	private matchesDirty = true;
 	private matches: number[] = [];
-	/** Timeline zoom window [startMs, endMs]; null = full range. */
+	/** Timeline zoom window [startMs, endMs] in projected time; null = full range. */
 	private zoom: { start: number; end: number } | null = null;
 	private timelineCols = 0;
 	private openedAt = Date.now();
+	/** dsh-style idle compression: gaps between busy intervals are removed from the axis. */
+	private compressIdle = true;
+	private projection: {
+		version: number;
+		map: Map<TrajectoryRecord, { s: number; e: number }>;
+		start: number;
+		end: number;
+	} | null = null;
 
 	constructor(
 		private tui: TUI,
@@ -101,8 +109,11 @@ export class TraceOverlay implements Component {
 
 	// ------------------------------------------------------------------ rows
 
-	private inZoomWindow(ts: number): boolean {
-		return !this.zoom || (ts >= this.zoom.start && ts <= this.zoom.end);
+	private inZoomWindow(r: TrajectoryRecord): boolean {
+		if (!this.zoom) return true;
+		const p = this.ensureProjection().map.get(r);
+		const ts = p?.s ?? r.ts;
+		return ts >= this.zoom.start && ts <= this.zoom.end;
 	}
 
 	private rebuildRows(): void {
@@ -112,7 +123,7 @@ export class TraceOverlay implements Component {
 			if (!range) continue;
 			const visibleIdx: number[] = [];
 			for (let i = range.first; i <= range.last; i++) {
-				if (this.inZoomWindow(this.store.records[i]!.ts)) visibleIdx.push(i);
+				if (this.inZoomWindow(this.store.records[i]!)) visibleIdx.push(i);
 			}
 			if (this.zoom && visibleIdx.length === 0) continue;
 			rows.push({ type: "header", turn });
@@ -154,6 +165,11 @@ export class TraceOverlay implements Component {
 			this.adjustZoom(ZOOM_FACTOR);
 		} else if (data === "0") {
 			this.zoom = null;
+			this.rebuildRows();
+		} else if (data === "x") {
+			this.compressIdle = !this.compressIdle;
+			this.zoom = null;
+			this.projection = null;
 			this.rebuildRows();
 		} else if (matchesKey(data, "space") || matchesKey(data, "return")) {
 			this.activate();
@@ -283,17 +299,70 @@ export class TraceOverlay implements Component {
 	}
 
 	private fullRange(): { start: number; end: number } | null {
-		const recs = this.store.records;
-		if (recs.length === 0) return null;
-		return { start: recs[0]!.ts, end: Math.max(recs[recs.length - 1]!.ts, Date.now()) };
+		if (this.store.records.length === 0) return null;
+		const p = this.ensureProjection();
+		return { start: p.start, end: p.end };
 	}
 
 	private selectedRecordTs(): number | undefined {
 		const row = this.rows[this.selected];
 		if (!row) return undefined;
-		if (row.type === "record") return this.store.records[row.index]!.ts;
-		const range = this.store.turnRange(row.turn);
-		return range ? this.store.records[range.first]!.ts : undefined;
+		const rec = row.type === "record" ? this.store.records[row.index]! : undefined;
+		if (rec) return this.ensureProjection().map.get(rec)?.s ?? rec.ts;
+		const range = this.store.turnRange((row as { type: "header"; turn: number }).turn);
+		if (!range) return undefined;
+		const first = this.store.records[range.first]!;
+		return this.ensureProjection().map.get(first)?.s ?? first.ts;
+	}
+
+	// ------------------------------------------------------------------ projection
+
+	private recordEnd(r: TrajectoryRecord): number {
+		if (r.kind === "assistant") {
+			if (r.streaming) return Date.now();
+			if (r.ttftMs !== undefined) return r.ts + r.ttftMs + (r.decodeMs ?? 0);
+			return r.ts; // replay: ts is completion time; span start via recordStart
+		}
+		if (r.kind === "tool") {
+			if (r.status === "running") return Date.now();
+			if (r.durationMs !== undefined) return r.ts + r.durationMs;
+		}
+		return r.ts;
+	}
+
+	private recordStart(r: TrajectoryRecord): number {
+		if (r.kind === "assistant" && r.startTs !== undefined) return r.startTs;
+		return r.ts;
+	}
+
+	/**
+	 * Port of dsh's deriveTimedTimeline idle compression: scan the union of busy
+	 * intervals across all lanes; gaps where NOTHING runs are removed, and every
+	 * span shifts left by the accumulated removed idle. Sequential agent work
+	 * (assistant → tool → assistant) thus tiles edge-to-edge with no gaps.
+	 */
+	private ensureProjection(): NonNullable<TraceOverlay["projection"]> {
+		const inFlight = this.hasInFlight();
+		if (this.projection && this.projection.version === this.store.version && !inFlight) return this.projection;
+		const raw = this.store.records.map((r) => ({ r, s: this.recordStart(r), e: this.recordEnd(r) }));
+		const map = new Map<TrajectoryRecord, { s: number; e: number }>();
+		const sorted = [...raw].sort((a, b) => a.s - b.s || a.e - b.e);
+		let removed = 0;
+		let coveredUntil: number | null = null;
+		for (const x of sorted) {
+			if (this.compressIdle && coveredUntil !== null && x.s > coveredUntil) removed += x.s - coveredUntil;
+			map.set(x.r, { s: x.s - removed, e: x.e - removed });
+			coveredUntil = coveredUntil === null ? x.e : Math.max(coveredUntil, x.e);
+		}
+		const proj = [...map.values()];
+		const start = proj.length > 0 ? Math.min(...proj.map((p) => p.s)) : 0;
+		let end = proj.length > 0 ? Math.max(...proj.map((p) => p.e)) : 0;
+		// Wall-clock mode keeps the trailing idle gap up to now (live sessions).
+		if (!this.compressIdle && this.store.records.length > 0) {
+			end = Math.max(end, Date.now());
+		}
+		this.projection = { version: this.store.version, map, start, end };
+		return this.projection;
 	}
 
 	// ------------------------------------------------------------------ render
@@ -452,8 +521,9 @@ export class TraceOverlay implements Component {
 	 * tool errors red; running records pulse a spinner tick at their right edge.
 	 */
 	private renderTimeline(width: number): string[] {
-		const range = this.zoom ?? this.fullRange();
-		if (!range || range.end - range.start < 1) return [];
+		const proj = this.ensureProjection();
+		const range = this.zoom ?? { start: proj.start, end: proj.end };
+		if (range.end - range.start < 1) return [];
 		const cols = Math.max(10, width - 9); // " user │" … "│"
 		this.timelineCols = cols;
 		const span = range.end - range.start;
@@ -461,65 +531,45 @@ export class TraceOverlay implements Component {
 
 		type Cell = { ch: string; color: Parameters<Theme["fg"]>[0]; priority: number };
 		const lanes: (Cell | undefined)[][] = [new Array(cols), new Array(cols), new Array(cols)];
-		/** Paint [ts0, ts1] inclusive; zero-duration events paint exactly one column. */
-		const put = (lane: number, ts0: number, ts1: number, ch: string, color: Cell["color"], priority: number) => {
-			for (let c = bucket(ts0); c <= bucket(ts1); c++) {
+		/** Paint projected [s0, s1] inclusive; zero-duration events paint exactly one column. */
+		const put = (lane: number, s0: number, s1: number, ch: string, color: Cell["color"], priority: number) => {
+			for (let c = bucket(s0); c <= bucket(s1); c++) {
 				const cell = lanes[lane]![c];
 				if (!cell || cell.priority <= priority) lanes[lane]![c] = { ch, color, priority };
 			}
 		};
 		const tick = SPINNER[this.spinnerIdx % SPINNER.length];
-		/** Assistant bars occupy these columns; tools of the same turn start strictly after. */
-		let lastAsstBucket = -1;
 
 		for (const r of this.store.records) {
+			const p = proj.map.get(r);
+			if (!p) continue;
 			switch (r.kind) {
 				case "user":
-					put(0, r.ts, r.ts, "●", "userMessageText", 1);
+					put(0, p.s, p.s, "●", "userMessageText", 1);
 					break;
 				case "assistant": {
 					const a = r as AssistantRecord;
 					if (a.streaming) {
-						// Waiting for first token so far = TTFT color; decode part accent.
-						const now = Date.now();
-						put(1, a.ts, now, "█", "muted", 2);
-						put(1, now, now, tick, "accent", 5);
+						put(1, p.s, p.e, "█", "muted", 2); // in flight
+						put(1, p.e, p.e, tick, "accent", 5);
 					} else if (a.ttftMs !== undefined) {
-						put(1, a.ts, a.ts + a.ttftMs, "█", "muted", 2); // TTFT = gray
-						put(1, a.ts + a.ttftMs, a.ts + a.ttftMs + (a.decodeMs ?? 0), "█", "accent", 2); // decode
+						put(1, p.s, p.s + a.ttftMs, "█", "muted", 2); // TTFT = gray
+						put(1, p.s + a.ttftMs, p.e, "█", "accent", 2); // decode
+					} else if (a.startTs !== undefined) {
+						put(1, p.s, p.e, "█", "accent", 2); // replay: approximated LLM span
 					} else {
-						put(1, a.ts, a.ts, "█", "accent", 2);
+						put(1, p.s, p.s, "█", "accent", 2);
 					}
-					lastAsstBucket = bucket(a.ttftMs !== undefined ? a.ts + a.ttftMs + (a.decodeMs ?? 0) : a.ts);
 					break;
 				}
 				case "tool": {
-					// A tool starts right after its parent assistant message; when both
-					// quantize to the same column, nudge the tool one column right so the
-					// lanes read as a sequence instead of stacking (replay especially).
-					const nudge = bucket(r.ts) <= lastAsstBucket ? lastAsstBucket + 1 : -1;
-					const putTool = (ch: string, color: Cell["color"], priority: number, end: number) => {
-						if (nudge < 0) {
-							put(2, r.ts, end, ch, color, priority);
-							return;
-						}
-						// Nudged: paint from the nudged start; even sub-bucket tools get one column.
-						const last = Math.max(nudge, bucket(Math.max(end, r.ts)));
-						for (let c = nudge; c <= last; c++) {
-							const cell = lanes[2]![c];
-							if (!cell || cell.priority <= priority) lanes[2]![c] = { ch, color, priority };
-						}
-					};
-					if (r.status === "running") {
-						putTool("█", "warning", 3, Date.now());
-						put(2, Date.now(), Date.now(), tick, "accent", 5);
-					} else {
-						putTool("█", r.status === "error" ? "error" : "warning", 3, r.ts + (r.durationMs ?? 0));
-					}
+					const color: Cell["color"] = r.status === "error" ? "error" : "warning";
+					put(2, p.s, p.e, "█", color, 3);
+					if (r.status === "running") put(2, p.e, p.e, tick, "accent", 5);
 					break;
 				}
 				case "compaction":
-					put(1, r.ts, r.ts, "◆", "warning", 4);
+					put(1, p.s, p.s, "◆", "warning", 4);
 					break;
 				default:
 					break;
@@ -541,10 +591,26 @@ export class TraceOverlay implements Component {
 				this.theme.fg("dim", ` ${labels[lane]!} `) + this.theme.fg("borderMuted", "│") + body + this.theme.fg("borderMuted", "│"),
 			);
 		}
+		// Axis: projected time is non-linear when idle-compressed, so label the
+		// real start clock plus busy-vs-wall duration and the axis mode.
+		const wallStart = this.store.records[0]!.ts;
+		const wallSpan = Math.max(...this.store.records.map((r) => this.recordEnd(r))) - wallStart;
+		const mode = this.compressIdle
+			? `busy ${formatDuration(proj.end - proj.start)} / wall ${formatDuration(wallSpan)} · x: wall-clock`
+			: `wall ${formatDuration(wallSpan)} · x: compress idle`;
 		const zoomTag = this.zoom ? this.theme.fg("warning", " zoomed (0 reset)") : "";
-		lines.push(this.theme.fg("dim", `       └${formatClock(range.start)}${"─".repeat(Math.max(0, cols - 16))}${formatClock(range.end)}┘`) + zoomTag);
+		const left = `       └${formatClock(wallStart)} `;
+		const fill = Math.max(1, cols - visibleWidth(left + mode) + 1);
+		lines.push(
+			this.theme.fg("dim", left) +
+				this.theme.fg("borderMuted", "─".repeat(fill)) +
+				this.theme.fg("dim", ` ${mode} `) +
+				this.theme.fg("borderMuted", "─┘") +
+				zoomTag,
+		);
 		return lines;
 	}
+
 
 	private renderInspector(width: number, height: number): string[] {
 		const { record, scroll } = this.inspector!;

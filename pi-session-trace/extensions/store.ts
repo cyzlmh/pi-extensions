@@ -60,7 +60,11 @@ export class TraceStore {
 		return () => this.listeners.delete(cb);
 	}
 
+	/** Incremented on every mutation — projection caches key off this. */
+	version = 0;
+
 	private notify(): void {
+		this.version++;
 		for (const cb of this.listeners) cb();
 	}
 }

@@ -36,6 +36,12 @@ export interface AssistantRecord extends BaseRecord {
 	ttftMs?: number;
 	/** live only: first message_update → message_end. */
 	decodeMs?: number;
+	/**
+	 * Span start. Live: equals ts (message_start). Replay: entry ts is message
+	 * COMPLETION time, so we approximate the LLM call's start as the previous
+	 * event's timestamp — the agent loop is near-continuous, making this close.
+	 */
+	startTs?: number;
 	streaming?: boolean;
 	interrupted?: boolean;
 }

@@ -27,6 +27,7 @@ Then `/reload` or restart pi.
 | `space` | Fold / unfold a turn |
 | `/` | Search record contents, `n`/`N` jump between matches |
 | `+` / `-` / `0` | Zoom timeline in (around selection) / out / reset |
+| `x` | Toggle timeline axis: idle-compressed (dsh-style, default) ⇄ wall-clock |
 | `g` / `G` | Top / bottom (G also re-enables tail-follow) |
 | `q` / `Esc` | Close (or back out of inspector) |
 
@@ -34,7 +35,7 @@ Then `/reload` or restart pi.
 
 - **Turn-grouped records** — user / assistant / tool / compaction, one dense line each
 - **TTFT vs decode timing** on assistant rows (live mode), plus token usage
-- **Timeline strip** — TTFT/decode color-split spans, tool ticks, compaction markers; zoom with `+`/`-`
+- **Timeline strip** — three lanes (user/assistant/tool), dsh-style idle-compressed axis (busy time tiles edge-to-edge; press `x` for wall-clock), TTFT/decode color split in live mode
 - **Live indicators** — spinner on streaming assistant messages and running tools; tail-follow with a `↓ N new` hint when you scroll up
 - **Inspector** — full message text + thinking, tool args/output, usage & cost, timing
 
