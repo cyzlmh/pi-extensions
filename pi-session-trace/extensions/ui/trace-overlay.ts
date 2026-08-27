@@ -320,10 +320,15 @@ export class TraceOverlay implements Component {
 		const sep = this.theme.fg("borderMuted", "─".repeat(width));
 		const hint = this.renderHint();
 
+		// Clamp scroll before both the list and the timeline consume the window.
+		if (!this.inspector) {
+			if (this.selected < this.scroll) this.scroll = this.selected;
+			if (this.selected >= this.scroll + bodyHeight) this.scroll = this.selected - bodyHeight + 1;
+		}
 		const body = this.inspector ? this.renderInspector(width, bodyHeight) : this.renderList(width, bodyHeight);
 
 		const lines = [title, sep, ...body];
-		if (showTimeline) lines.push(...this.renderTimeline(width));
+		if (showTimeline) lines.push(...this.renderTimeline(width, bodyHeight));
 		lines.push(sep, hint);
 
 		// Open animation: reveal top-to-bottom over ~120ms (FR-15).
@@ -357,10 +362,7 @@ export class TraceOverlay implements Component {
 		if (this.rows.length === 0) {
 			return [this.theme.fg("muted", "  loading… or empty session")];
 		}
-		// keep selection in view
-		if (this.selected < this.scroll) this.scroll = this.selected;
-		if (this.selected >= this.scroll + height) this.scroll = this.selected - height + 1;
-
+		// (scroll clamping done in render())
 		const out: string[] = [];
 		for (let i = this.scroll; i < Math.min(this.rows.length, this.scroll + height); i++) {
 			const row = this.rows[i]!;
@@ -454,30 +456,53 @@ export class TraceOverlay implements Component {
 	/**
 	 * Timeline strip (FR-6): three lanes (user / assistant / tool), one column per
 	 * time bucket. Color carries meaning, not shape — TTFT warning vs decode accent,
-	 * tool errors red; running records pulse a spinner tick at their right edge.
+	/**
+	 * Timeline strip: three lanes (user / assistant / tool) over the records
+	 * currently visible in the list window — like dsh, which only projects the
+	 * loaded ledger page. This keeps columns fine-grained (each column ≈ a
+	 * single operation) so complementary lane texture is always visible,
+	 * instead of saturating when a whole long session is crammed into one row.
+	 * Idle-compressed axis: gaps where nothing runs are removed.
 	 */
-	private renderTimeline(width: number): string[] {
+	private renderTimeline(width: number, listHeight: number): string[] {
 		const proj = this.ensureProjection();
-		const range = { start: proj.start, end: proj.end };
-		if (range.end - range.start < 1) return [];
+		const visible: TrajectoryRecord[] = [];
+		for (let i = this.scroll; i < Math.min(this.rows.length, this.scroll + listHeight); i++) {
+			const row = this.rows[i]!;
+			if (row.type === "record") visible.push(this.store.records[row.index]!);
+		}
+		const spans = visible.map((r) => proj.map.get(r)).filter((p) => p !== undefined);
+		if (spans.length === 0) return [];
+		const start = Math.min(...spans.map((p) => p.s));
+		let end = Math.max(...spans.map((p) => p.e));
+		if (end - start < 1000) end = start + 1000;
+		const range = { start, end };
 		const cols = Math.max(10, width - 9); // " user │" … "│"
 		const span = range.end - range.start;
 		const bucket = (ts: number) => Math.max(0, Math.min(cols - 1, Math.floor(((ts - range.start) / span) * cols)));
 
 		type Cell = { ch: string; color: Parameters<Theme["fg"]>[0]; priority: number };
 		const lanes: (Cell | undefined)[][] = [new Array(cols), new Array(cols), new Array(cols)];
-		/** Paint projected [s0, s1] inclusive; zero-duration events paint exactly one column. */
+		/**
+		 * Paint [s0, s1) half-open: a column is painted iff it intersects the
+		 * interval. Complementary spans (assistant ends where its tool starts)
+		 * then tile perfectly with zero boundary double-painting. Points (s0==s1)
+		 * paint exactly one column.
+		 */
 		const put = (lane: number, s0: number, s1: number, ch: string, color: Cell["color"], priority: number) => {
-			for (let c = bucket(s0); c <= bucket(s1); c++) {
+			const c0 = bucket(s0);
+			let c1 = s1 > s0 ? Math.ceil(((s1 - range.start) / span) * cols) - 1 : c0;
+			c1 = Math.max(c0, Math.min(cols - 1, c1));
+			for (let c = c0; c <= c1; c++) {
 				const cell = lanes[lane]![c];
 				if (!cell || cell.priority <= priority) lanes[lane]![c] = { ch, color, priority };
 			}
 		};
 		const tick = SPINNER[this.spinnerIdx % SPINNER.length];
 
-		for (const r of this.store.records) {
-			const p = proj.map.get(r);
-			if (!p) continue;
+		for (let i = 0; i < visible.length; i++) {
+			const r = visible[i]!;
+			const p = spans[i]!;
 			switch (r.kind) {
 				case "user":
 					put(0, p.s, p.s, "●", "userMessageText", 1);
@@ -490,10 +515,8 @@ export class TraceOverlay implements Component {
 					} else if (a.ttftMs !== undefined) {
 						put(1, p.s, p.s + a.ttftMs, "█", "muted", 2); // TTFT = gray
 						put(1, p.s + a.ttftMs, p.e, "█", "accent", 2); // decode
-					} else if (a.startTs !== undefined) {
-						put(1, p.s, p.e, "█", "accent", 2); // replay: approximated LLM span
 					} else {
-						put(1, p.s, p.s, "█", "accent", 2);
+						put(1, p.s, p.e, "█", "accent", 2); // replay: approximated LLM span
 					}
 					break;
 				}
@@ -526,20 +549,20 @@ export class TraceOverlay implements Component {
 				this.theme.fg("dim", ` ${labels[lane]!} `) + this.theme.fg("borderMuted", "│") + body + this.theme.fg("borderMuted", "│"),
 			);
 		}
-		// Axis: projected time is non-linear when idle-compressed, so label the
-		// real start clock plus busy-vs-wall duration and the axis mode.
-		const wallStart = this.store.records[0]!.ts;
-		const wallSpan = Math.max(...this.store.records.map((r) => this.recordEnd(r))) - wallStart;
-		const mode = `busy ${formatDuration(proj.end - proj.start)} / wall ${formatDuration(wallSpan)}`;
+		// Axis: real clock of the visible window + its busy (idle-compressed) length.
+		const wallStart = visible[0]!.ts;
+		const wallEnd = Math.max(...visible.map((r) => this.recordEnd(r)));
+		const mode = `busy ${formatDuration(range.end - range.start)} / wall ${formatDuration(wallEnd - wallStart)}`;
 		const left = `       └${formatClock(wallStart)} `;
-		const fill = Math.max(1, cols - visibleWidth(left + mode) + 1);
+		const right = ` ${formatClock(wallEnd)}┘`;
+		const fill = Math.max(1, cols - visibleWidth(left + mode + right) + 2);
 		lines.push(
 			this.theme.fg("dim", left) +
 				this.theme.fg("borderMuted", "─".repeat(fill)) +
 				this.theme.fg("dim", ` ${mode} `) +
-				this.theme.fg("borderMuted", "─┘"),
+				this.theme.fg("borderMuted", "─") +
+				this.theme.fg("dim", right),
 		);
-		return lines;
 		return lines;
 	}
 
