@@ -256,17 +256,6 @@ export class TraceOverlay implements Component {
 
 	// ------------------------------------------------------------------ projection
 
-	private selectedRecordTs(): number | undefined {
-		const row = this.rows[this.selected];
-		if (!row) return undefined;
-		const rec = row.type === "record" ? this.store.records[row.index]! : undefined;
-		if (rec) return this.ensureProjection().map.get(rec)?.s ?? rec.ts;
-		const range = this.store.turnRange((row as { type: "header"; turn: number }).turn);
-		if (!range) return undefined;
-		const first = this.store.records[range.first]!;
-		return this.ensureProjection().map.get(first)?.s ?? first.ts;
-	}
-
 	private recordEnd(r: TrajectoryRecord): number {
 		if (r.kind === "assistant") {
 			if (r.streaming) return Date.now();
@@ -588,22 +577,48 @@ export class TraceOverlay implements Component {
 			if (p) boundaryCols.add(bucket(p.s));
 		}
 
-		const selTs = this.selectedRecordTs();
-		const cursorCol = selTs !== undefined && selTs >= range.start && selTs <= range.end ? bucket(selTs) : -1;
+		// Cursor rectangle: the selected record's full projected span, drawn as
+		// an inverse band across all three lanes (dsh highlights the whole span,
+		// not just its start column). Header selection spans the entire turn.
+		let cur0 = -1;
+		let cur1 = -1;
+		const selRow = this.rows[this.selected];
+		if (selRow) {
+			const spanOf = (r: TrajectoryRecord): { s: number; e: number } => proj.map.get(r) ?? { s: r.ts, e: r.ts };
+			let selS: number | undefined;
+			let selE: number | undefined;
+			if (selRow.type === "record") {
+				const p = spanOf(this.store.records[selRow.index]!);
+				selS = p.s;
+				selE = p.e;
+			} else {
+				const tr = this.store.turnRange(selRow.turn);
+				if (tr) {
+					selS = spanOf(this.store.records[tr.first]!).s;
+				selE = spanOf(this.store.records[tr.last]!).e;
+			}
+			}
+			if (selS !== undefined && selE !== undefined && selE >= range.start && selS <= range.end) {
+				cur0 = bucket(selS);
+				cur1 = selE > selS ? Math.ceil(((selE - range.start) / span) * cols) - 1 : cur0;
+				if (cur1 < cur0) cur1 = cur0; // sub-column span rounds to its start bucket
+			}
+		}
 		const labels = ["user", "asst", "tool"];
 		const lines: string[] = [];
 		for (let lane = 0; lane < 3; lane++) {
 			let body = "";
 			for (let c = 0; c < cols; c++) {
 				const cell = lanes[lane]![c];
+			const inCursor = cur0 >= 0 && c >= cur0 && c <= cur1;
 				let s: string;
-				if (c === cursorCol) s = this.theme.inverse(cell ? cell.ch : " ");
+				if (inCursor) s = this.theme.inverse(cell ? cell.ch : " ");
 				else if (cell && searching && !matchCols.has(c)) s = this.theme.fg("dim", cell.ch);
 				else s = cell ? this.theme.fg(cell.color, cell.ch) : " ";
 				// Turn boundary band: a dim bg stripe through all three lanes —
 				// glyphs survive, the eye gets a hard vertical edge (the cursor
-				// column keeps its inverse highlight instead).
-				if (boundaryCols.has(c) && c !== cursorCol) s = this.theme.bg("scrollbarThumb", s);
+				// rectangle keeps its inverse highlight instead).
+				if (boundaryCols.has(c) && !inCursor) s = this.theme.bg("scrollbarThumb", s);
 				body += s;
 			}
 			lines.push(
