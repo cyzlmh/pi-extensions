@@ -15,10 +15,6 @@ import {
 type Row = { type: "header"; turn: number } | { type: "record"; index: number };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-/** Zoom window halves/doubles around the selected record's timestamp. */
-const ZOOM_FACTOR = 3;
-/** Zoom floor: one column never goes below this — the minimum resolvable granularity. */
-const MIN_COL_MS = 100;
 const OPEN_ANIM_MS = 120;
 
 export class TraceOverlay implements Component {
@@ -38,12 +34,7 @@ export class TraceOverlay implements Component {
 	private query = "";
 	private matchesDirty = true;
 	private matches: number[] = [];
-	/** Timeline zoom window [startMs, endMs] in projected time; null = full range. */
-	private zoom: { start: number; end: number } | null = null;
-	private timelineCols = 0;
 	private openedAt = Date.now();
-	/** dsh-style idle compression: gaps between busy intervals are removed from the axis. */
-	private compressIdle = true;
 	private projection: {
 		version: number;
 		map: Map<TrajectoryRecord, { s: number; e: number }>;
@@ -109,26 +100,15 @@ export class TraceOverlay implements Component {
 
 	// ------------------------------------------------------------------ rows
 
-	private inZoomWindow(r: TrajectoryRecord): boolean {
-		if (!this.zoom) return true;
-		const p = this.ensureProjection().map.get(r);
-		const ts = p?.s ?? r.ts;
-		return ts >= this.zoom.start && ts <= this.zoom.end;
-	}
 
 	private rebuildRows(): void {
 		const rows: Row[] = [];
 		for (const turn of this.store.turns()) {
 			const range = this.store.turnRange(turn);
 			if (!range) continue;
-			const visibleIdx: number[] = [];
-			for (let i = range.first; i <= range.last; i++) {
-				if (this.inZoomWindow(this.store.records[i]!)) visibleIdx.push(i);
-			}
-			if (this.zoom && visibleIdx.length === 0) continue;
 			rows.push({ type: "header", turn });
 			if (this.collapsed.has(turn)) continue;
-			for (const i of visibleIdx) rows.push({ type: "record", index: i });
+			for (let i = range.first; i <= range.last; i++) rows.push({ type: "record", index: i });
 		}
 		this.rows = rows;
 		if (this.selected >= rows.length) this.selected = Math.max(0, rows.length - 1);
@@ -159,18 +139,6 @@ export class TraceOverlay implements Component {
 			this.jumpMatch(1);
 		} else if (data === "N") {
 			this.jumpMatch(-1);
-		} else if (data === "+") {
-			this.adjustZoom(1 / ZOOM_FACTOR);
-		} else if (data === "-") {
-			this.adjustZoom(ZOOM_FACTOR);
-		} else if (data === "0") {
-			this.zoom = null;
-			this.rebuildRows();
-		} else if (data === "x") {
-			this.compressIdle = !this.compressIdle;
-			this.zoom = null;
-			this.projection = null;
-			this.rebuildRows();
 		} else if (matchesKey(data, "space") || matchesKey(data, "return")) {
 			this.activate();
 		}
@@ -276,33 +244,7 @@ export class TraceOverlay implements Component {
 		}
 	}
 
-	// ------------------------------------------------------------------ zoom
-
-	private adjustZoom(factor: number): void {
-		const range = this.fullRange();
-		if (!range) return;
-		const center = this.selectedRecordTs() ?? (range.start + range.end) / 2;
-		const cols = this.timelineCols || 80;
-		const minSpan = cols * MIN_COL_MS; // zoom floor: minimum resolvable granularity
-		let span = (this.zoom ? this.zoom.end - this.zoom.start : range.end - range.start) * factor;
-		span = Math.max(minSpan, span);
-		if (span >= range.end - range.start) {
-			this.zoom = null;
-		} else {
-			let start = center - span / 2;
-			start = Math.max(range.start, Math.min(start, range.end - span));
-			this.zoom = { start, end: start + span };
-		}
-		this.rebuildRows();
-		// keep selection on a visible record
-		if (this.rows.length > 0 && this.rows[this.selected]?.type === "header") this.move(1);
-	}
-
-	private fullRange(): { start: number; end: number } | null {
-		if (this.store.records.length === 0) return null;
-		const p = this.ensureProjection();
-		return { start: p.start, end: p.end };
-	}
+	// ------------------------------------------------------------------ projection
 
 	private selectedRecordTs(): number | undefined {
 		const row = this.rows[this.selected];
@@ -314,8 +256,6 @@ export class TraceOverlay implements Component {
 		const first = this.store.records[range.first]!;
 		return this.ensureProjection().map.get(first)?.s ?? first.ts;
 	}
-
-	// ------------------------------------------------------------------ projection
 
 	private recordEnd(r: TrajectoryRecord): number {
 		if (r.kind === "assistant") {
@@ -350,17 +290,13 @@ export class TraceOverlay implements Component {
 		let removed = 0;
 		let coveredUntil: number | null = null;
 		for (const x of sorted) {
-			if (this.compressIdle && coveredUntil !== null && x.s > coveredUntil) removed += x.s - coveredUntil;
+			if (coveredUntil !== null && x.s > coveredUntil) removed += x.s - coveredUntil;
 			map.set(x.r, { s: x.s - removed, e: x.e - removed });
 			coveredUntil = coveredUntil === null ? x.e : Math.max(coveredUntil, x.e);
 		}
 		const proj = [...map.values()];
 		const start = proj.length > 0 ? Math.min(...proj.map((p) => p.s)) : 0;
-		let end = proj.length > 0 ? Math.max(...proj.map((p) => p.e)) : 0;
-		// Wall-clock mode keeps the trailing idle gap up to now (live sessions).
-		if (!this.compressIdle && this.store.records.length > 0) {
-			end = Math.max(end, Date.now());
-		}
+		const end = proj.length > 0 ? Math.max(...proj.map((p) => p.e)) : 0;
 		this.projection = { version: this.store.version, map, start, end };
 		return this.projection;
 	}
@@ -403,7 +339,7 @@ export class TraceOverlay implements Component {
 	private renderHint(): string {
 		if (this.searchMode) return this.theme.fg("text", ` /${this.query}`) + this.theme.fg("muted", "█");
 		if (this.inspector) return this.theme.fg("muted", " j/k scroll · esc back");
-		let hint = this.theme.fg("muted", " j/k move · enter inspect · space fold · / search · +/- zoom · g/G · q close");
+		let hint = this.theme.fg("muted", " j/k move · enter inspect · space fold · / search · g/G top/end · q close");
 		this.ensureMatches();
 		if (this.query && this.matches.length > 0) {
 			const rank = this.matches.filter((m) => m <= this.selected).length || this.matches.length;
@@ -419,7 +355,7 @@ export class TraceOverlay implements Component {
 
 	private renderList(width: number, height: number): string[] {
 		if (this.rows.length === 0) {
-			return [this.theme.fg("muted", this.store.records.length === 0 ? "  loading… or empty session" : "  nothing in zoom window (0 to reset)")];
+			return [this.theme.fg("muted", "  loading… or empty session")];
 		}
 		// keep selection in view
 		if (this.selected < this.scroll) this.scroll = this.selected;
@@ -522,10 +458,9 @@ export class TraceOverlay implements Component {
 	 */
 	private renderTimeline(width: number): string[] {
 		const proj = this.ensureProjection();
-		const range = this.zoom ?? { start: proj.start, end: proj.end };
+		const range = { start: proj.start, end: proj.end };
 		if (range.end - range.start < 1) return [];
 		const cols = Math.max(10, width - 9); // " user │" … "│"
-		this.timelineCols = cols;
 		const span = range.end - range.start;
 		const bucket = (ts: number) => Math.max(0, Math.min(cols - 1, Math.floor(((ts - range.start) / span) * cols)));
 
@@ -595,19 +530,16 @@ export class TraceOverlay implements Component {
 		// real start clock plus busy-vs-wall duration and the axis mode.
 		const wallStart = this.store.records[0]!.ts;
 		const wallSpan = Math.max(...this.store.records.map((r) => this.recordEnd(r))) - wallStart;
-		const mode = this.compressIdle
-			? `busy ${formatDuration(proj.end - proj.start)} / wall ${formatDuration(wallSpan)} · x: wall-clock`
-			: `wall ${formatDuration(wallSpan)} · x: compress idle`;
-		const zoomTag = this.zoom ? this.theme.fg("warning", " zoomed (0 reset)") : "";
+		const mode = `busy ${formatDuration(proj.end - proj.start)} / wall ${formatDuration(wallSpan)}`;
 		const left = `       └${formatClock(wallStart)} `;
 		const fill = Math.max(1, cols - visibleWidth(left + mode) + 1);
 		lines.push(
 			this.theme.fg("dim", left) +
 				this.theme.fg("borderMuted", "─".repeat(fill)) +
 				this.theme.fg("dim", ` ${mode} `) +
-				this.theme.fg("borderMuted", "─┘") +
-				zoomTag,
+				this.theme.fg("borderMuted", "─┘"),
 		);
+		return lines;
 		return lines;
 	}
 
