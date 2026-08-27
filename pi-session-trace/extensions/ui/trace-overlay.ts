@@ -466,15 +466,15 @@ export class TraceOverlay implements Component {
 	 */
 	private renderTimeline(width: number, listHeight: number): string[] {
 		const proj = this.ensureProjection();
-		const visible: TrajectoryRecord[] = [];
+		const visible: { r: TrajectoryRecord; idx: number }[] = [];
 		for (let i = this.scroll; i < Math.min(this.rows.length, this.scroll + listHeight); i++) {
 			const row = this.rows[i]!;
-			if (row.type === "record") visible.push(this.store.records[row.index]!);
+			if (row.type === "record") visible.push({ r: this.store.records[row.index]!, idx: row.index });
 		}
-		const pairs: { r: TrajectoryRecord; p: { s: number; e: number } }[] = [];
-		for (const r of visible) {
+		const pairs: { r: TrajectoryRecord; idx: number; p: { s: number; e: number } }[] = [];
+		for (const { r, idx } of visible) {
 			const p = proj.map.get(r);
-			if (p) pairs.push({ r, p });
+			if (p) pairs.push({ r, idx, p });
 		}
 		if (pairs.length === 0) return [];
 		const start = Math.min(...pairs.map((x) => x.p.s));
@@ -493,7 +493,7 @@ export class TraceOverlay implements Component {
 		 * then tile perfectly with zero boundary double-painting. Points (s0==s1)
 		 * paint exactly one column.
 		 */
-		const put = (lane: number, s0: number, s1: number, ch: string, color: Cell["color"], priority: number) => {
+		const put = (lane: number, s0: number, s1: number, ch: string, color: Cell["color"], priority: number): [number, number] => {
 			const c0 = bucket(s0);
 			let c1 = s1 > s0 ? Math.ceil(((s1 - range.start) / span) * cols) - 1 : c0;
 			c1 = Math.max(c0, Math.min(cols - 1, c1));
@@ -501,35 +501,44 @@ export class TraceOverlay implements Component {
 				const cell = lanes[lane]![c];
 				if (!cell || cell.priority <= priority) lanes[lane]![c] = { ch, color, priority };
 			}
+			return [c0, c1];
 		};
 		const tick = SPINNER[this.spinnerIdx % SPINNER.length];
 
-		for (const { r, p } of pairs) {
+		// Search-linked timeline dimming (dsh: non-matching spans get opacity 0.14).
+		const searching = this.query.length > 0;
+		const matchIdx = new Set(this.matches);
+		const matchCols = new Set<number>();
+		const markMatch = (idx: number, [c0, c1]: [number, number]) => {
+			if (matchIdx.has(idx)) for (let c = c0; c <= c1; c++) matchCols.add(c);
+		};
+
+		for (const { r, idx, p } of pairs) {
 			switch (r.kind) {
 				case "user":
-					put(0, p.s, p.s, "●", "userMessageText", 1);
+					markMatch(idx, put(0, p.s, p.s, "●", "userMessageText", 1));
 					break;
 				case "assistant": {
 					const a = r as AssistantRecord;
 					if (a.streaming) {
 						put(1, p.s, p.e, "█", "muted", 2); // in flight
-						put(1, p.e, p.e, tick, "accent", 5);
+						markMatch(idx, put(1, p.e, p.e, tick, "accent", 5));
 					} else if (a.ttftMs !== undefined) {
-						put(1, p.s, p.s + a.ttftMs, "█", "muted", 2); // TTFT = gray
-						put(1, p.s + a.ttftMs, p.e, "█", "accent", 2); // decode
+						put(1, p.s, p.s + a.ttftMs, "█", "thinkingText", 2); // TTFT = same-phase dim tint (dsh gradient)
+						markMatch(idx, put(1, p.s + a.ttftMs, p.e, "█", "accent", 2)); // decode
 					} else {
-						put(1, p.s, p.e, "█", "accent", 2); // replay: approximated LLM span
+						markMatch(idx, put(1, p.s, p.e, "█", "accent", 2)); // replay: approximated LLM span
 					}
 					break;
 				}
 				case "tool": {
 					const color: Cell["color"] = r.status === "error" ? "error" : "warning";
-					put(2, p.s, p.e, "█", color, 3);
+					markMatch(idx, put(2, p.s, p.e, "█", color, 3));
 					if (r.status === "running") put(2, p.e, p.e, tick, "accent", 5);
 					break;
 				}
 				case "compaction":
-					put(1, p.s, p.s, "◆", "warning", 4);
+					markMatch(idx, put(1, p.s, p.s, "◆", "warning", 4));
 					break;
 				default:
 					break;
@@ -560,6 +569,7 @@ export class TraceOverlay implements Component {
 			for (let c = 0; c < cols; c++) {
 				const cell = lanes[lane]![c];
 				if (c === cursorCol) body += this.theme.inverse(cell ? cell.ch : " ");
+				else if (cell && searching && !matchCols.has(c)) body += this.theme.fg("dim", cell.ch);
 				else body += cell ? this.theme.fg(cell.color, cell.ch) : " ";
 			}
 			lines.push(
