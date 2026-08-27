@@ -24,8 +24,9 @@ Push to `main` publishes automatically ([workflow](.github/workflows/publish.yml
 bump `version` in the package's `package.json`, merge to `main` — any package
 whose version isn't on npm yet gets published. No tags, no manual steps.
 
-One-time setup: set the `NPM_TOKEN` repo secret to an npm **Automation**
-token (bypasses OTP in CI).
+One-time setup: configure npm **Trusted Publishing** for each package, bound
+to GitHub Actions workflow `publish.yml` in `cyzlmh/pi-extensions`. It uses
+OIDC short-lived credentials — no `NPM_TOKEN` secret or OTP in CI.
 
 ## Feedback
 
