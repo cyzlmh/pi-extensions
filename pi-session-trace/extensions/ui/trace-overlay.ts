@@ -537,15 +537,16 @@ export class TraceOverlay implements Component {
 		}
 
 		/**
-		 * Ownership post-pass: a tool glyph always claims a full column (even a
-		 * 0.0s tool paints one), so the assistant lane must yield every column a
-		 * tool touches — otherwise sub-column tools look like overlaps. The lanes
-		 * are a sequence diagram, not an area chart: strict alternation beats
-		 * pixel-perfect coverage. Diamonds and spinner ticks are never erased.
+		 * Ownership post-pass: points (user messages, compaction diamonds) and
+		 * tool glyphs always claim a full column, so the assistant lane yields
+		 * every column they touch — otherwise boundary-sharing looks like
+		 * overlap (a user message and the assistant span it triggers share the
+		 * same start instant). Sequence-diagram semantics: strict alternation
+		 * beats pixel-perfect coverage. Diamonds and spinner ticks survive.
 		 */
 		for (let c = 0; c < cols; c++) {
 			const asstCell = lanes[1]![c];
-			if (lanes[2]![c] && asstCell && asstCell.priority <= 2) {
+			if ((lanes[0]![c] || lanes[2]![c]) && asstCell && asstCell.priority <= 2) {
 				lanes[1]![c] = undefined;
 			}
 		}
