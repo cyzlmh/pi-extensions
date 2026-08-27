@@ -526,10 +526,10 @@ export class TraceOverlay implements Component {
 						put(1, p.s, p.e, "█", "muted", 2); // in flight
 						markMatch(idx, put(1, p.e, p.e, tick, "accent", 5));
 					} else if (a.ttftMs !== undefined) {
-						put(1, p.s, p.s + a.ttftMs, "█", "thinkingText", 2); // TTFT = same-phase dim tint (dsh gradient)
-						markMatch(idx, put(1, p.s + a.ttftMs, p.e, "█", "accent", 2)); // decode
+						put(1, p.s, p.s + a.ttftMs, "█", "thinkingMedium", 2); // TTFT = dim ramp step
+						markMatch(idx, put(1, p.s + a.ttftMs, p.e, "█", "thinkingHigh", 2)); // decode
 					} else {
-						markMatch(idx, put(1, p.s, p.e, "█", "accent", 2)); // replay: approximated LLM span
+						markMatch(idx, put(1, p.s, p.e, "█", "thinkingHigh", 2)); // replay: approximated LLM span
 					}
 					break;
 				}
@@ -654,14 +654,15 @@ function badgeColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 function kindColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 	switch (r.kind) {
 		case "user":
-			return "userMessageText";
+			return "syntaxKeyword"; // dsh: user spans are business-blue
 		case "assistant":
-			return "accent";
+			// dsh: assistant decode = brand blue-violet; thinkingHigh is the theme's violet ramp
+			return "thinkingHigh";
 		case "tool":
 			// soft orange (dsh tools hue); warning would be neon yellow in dark theme
 			return r.status === "error" ? "error" : r.status === "interrupted" ? "muted" : "syntaxString";
 		case "compaction":
-			return "warning";
+			return "success"; // dsh: context spans are desaturated green, not warn yellow
 		case "marker":
 			return "muted";
 	}
