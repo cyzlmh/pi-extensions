@@ -1,13 +1,14 @@
 {
   "name": "pi-fork-pane",
-  "version": "0.1.1",
-  "description": "Split a tmux pane and fork the current pi session into it",
+  "version": "0.2.0",
+  "description": "Split a tmux pane and fork the current pi session — or any picked session-tree point — into it",
   "keywords": [
     "pi-package",
     "pi",
     "pi-coding-agent",
     "tmux",
     "fork",
+    "tree",
     "session"
   ],
   "license": "MIT",

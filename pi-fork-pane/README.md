@@ -19,6 +19,12 @@ Inside a pi session running in tmux:
 
 The fork is a full copy of the session file (same as `pi --fork <file>` / `/clone`): the new pane's pi starts with the complete conversation, and the two sessions diverge independently from there. Use `/tree` in the forked session to jump back to any earlier point.
 
+### `/tree-pane`
+
+`/tree-pane` opens the same tree selector as `/tree`, but instead of switching the current session in place, it forks the **picked entry** into a new tmux pane — your current session stays exactly where it is. `/tree-pane h` splits horizontally.
+
+The new pane gets a fresh session file containing the path from the root to the selected entry, so you can branch off an earlier point of the conversation side-by-side.
+
 The new pane inherits the current working directory, so the fork lands in the same project.
 
 ## Requirements
