@@ -34,7 +34,10 @@ export class EntryConverter {
 		const ts = Date.parse(entry.timestamp ?? "") || 0;
 		const id = typeof entry.id === "string" ? entry.id : `gen-${this.counter++}`;
 		const prevTs = this.lastEventTs;
-		if (ts > 0) this.lastEventTs = Math.max(this.lastEventTs, ts);
+		// Skip the "session" header: on resume its timestamp is the resume time,
+		// newer than the historical messages that follow — counting it would
+		// poison lastEventTs and kill every assistant span approximation.
+		if (ts > 0 && entry.type !== "session") this.lastEventTs = Math.max(this.lastEventTs, ts);
 
 		switch (entry.type) {
 			case "message": {

@@ -390,9 +390,9 @@ export class TraceOverlay implements Component {
 		const tokens = formatTokens(this.store.turnTokens(turn));
 		const ts = range ? formatClock(this.store.records[range.first]!.ts) : "";
 		const arrow = open ? "▾" : "▸";
-		// dsh-style dim rail label; stats trail on the right
+		// dsh-style dim rail label; stats trail on the right. Turn 0 = pre-first-message markers.
 		return (
-			this.theme.fg("muted", `${arrow} Turn ${turn}`) +
+			this.theme.fg("muted", `${arrow} ${turn === 0 ? "Setup" : `Turn ${turn}`}`) +
 			this.theme.fg("borderMuted", " ─────") +
 			this.theme.fg("dim", ` ${ts} · ${tokens} tok${open ? "" : ` · ${count} records`}`)
 		);
@@ -423,6 +423,7 @@ export class TraceOverlay implements Component {
 						"dim",
 						` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok${timing}`,
 					);
+					if (a.interrupted) meta += this.theme.fg("muted", " · interrupted");
 				}
 				body = this.badge("ASSISTANT", kindColor(r)) + clip(a.text, width - 28) + meta;
 				break;
@@ -577,15 +578,39 @@ export class TraceOverlay implements Component {
 			);
 		}
 		// Axis: real clock of the visible window + its busy (idle-compressed) length.
+		// Turn boundaries are ticked with ┬ at their lane column (dsh marks them too).
 		const wallStart = pairs[0]!.r.ts;
 		const wallEnd = Math.max(...pairs.map((x) => this.recordEnd(x.r)));
 		const mode = `busy ${formatDuration(range.end - range.start)} / wall ${formatDuration(wallEnd - wallStart)}`;
 		const left = `       └${formatClock(wallStart)} `;
 		const right = ` ${formatClock(wallEnd)}┘`;
 		const fill = Math.max(1, cols - visibleWidth(left + mode + right) + 2);
+		const leftW = visibleWidth(left);
+		const fillChars: string[] = new Array(fill).fill("─");
+		let prevTurn = -1;
+		for (const { r, p } of pairs) {
+			if (r.turn === prevTurn) continue;
+			prevTurn = r.turn;
+			const idx = 7 + bucket(p.s) - leftW; // lanes start 7 chars in (" user │")
+			if (idx >= 0 && idx < fill) fillChars[idx] = "┬";
+		}
+		// Emit the fill as color runs: ─ in borderMuted, ┬ in dim.
+		let fillStr = "";
+		let run = "";
+		let runTick = fillChars[0] === "┬";
+		for (const ch of fillChars) {
+			const isTick = ch === "┬";
+			if (isTick !== runTick) {
+				fillStr += this.theme.fg(runTick ? "dim" : "borderMuted", run);
+				run = "";
+				runTick = isTick;
+			}
+			run += ch;
+		}
+		fillStr += this.theme.fg(runTick ? "dim" : "borderMuted", run);
 		lines.push(
 			this.theme.fg("dim", left) +
-				this.theme.fg("borderMuted", "─".repeat(fill)) +
+				fillStr +
 				this.theme.fg("dim", ` ${mode} `) +
 				this.theme.fg("borderMuted", "─") +
 				this.theme.fg("dim", right),

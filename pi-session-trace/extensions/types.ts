@@ -87,7 +87,9 @@ export function formatDuration(ms: number | undefined): string {
 	if (ms < 1000) return `${Math.round(ms)}ms`;
 	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
 	const m = Math.floor(ms / 60_000);
-	return `${m}m${Math.round((ms - m * 60_000) / 1000)}s`;
+	const s = Math.round((ms - m * 60_000) / 1000);
+	if (s === 60) return `${m + 1}m0s`; // 1m59.6s rounds up, not "1m60s"
+	return `${m}m${s}s`;
 }
 
 export function formatClock(ts: number): string {

@@ -21,14 +21,22 @@ export class TraceStore {
 
 	/** Update an existing record in place (tool completion, streaming growth). */
 	update(id: string, patch: Partial<TrajectoryRecord>): void {
-		const rec = this.records.find((r) => r.id === id);
+		const rec = this.findById(id);
 		if (!rec) return;
 		Object.assign(rec, patch);
 		this.notify();
 	}
 
 	get(id: string): TrajectoryRecord | undefined {
-		return this.records.find((r) => r.id === id);
+		return this.findById(id);
+	}
+
+	/** Updates almost always target recently appended records — scan from the tail. */
+	private findById(id: string): TrajectoryRecord | undefined {
+		for (let i = this.records.length - 1; i >= 0; i--) {
+			if (this.records[i]!.id === id) return this.records[i];
+		}
+		return undefined;
 	}
 
 	/** Sum of assistant input+output tokens within a turn. */
