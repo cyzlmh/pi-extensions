@@ -1,0 +1,38 @@
+{
+  "name": "pi-session-trace",
+  "version": "0.1.0",
+  "description": "Live + replayable session trajectory for pi — dsh-style turn timeline with TTFT/decode split, backed by pi's session JSONL so history is never lost",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "pi-coding-agent",
+    "trajectory",
+    "session",
+    "trace",
+    "timeline"
+  ],
+  "license": "MIT",
+  "author": "cyzlmh",
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typescript": "^5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyzlmh/pi-extensions.git",
+    "directory": "pi-session-trace"
+  },
+  "bugs": {
+    "url": "https://github.com/cyzlmh/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-session-trace",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
