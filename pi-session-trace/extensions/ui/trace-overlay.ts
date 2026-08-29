@@ -16,6 +16,7 @@ type Row = { type: "header"; turn: number } | { type: "record"; index: number };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const OPEN_ANIM_MS = 120;
+const TOOL_COLORS = ["syntaxFunction", "syntaxKeyword", "syntaxString", "syntaxNumber", "syntaxType", "accent", "success"] as const satisfies readonly Parameters<Theme["fg"]>[0][];
 
 export class TraceOverlay implements Component {
 	private rows: Row[] = [];
@@ -740,13 +741,20 @@ function kindColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 			// pi's own calm teal — the assistant IS pi; TTFT rides the accent→thinkingLow ramp
 			return "accent";
 		case "tool":
-			// soft orange (dsh tools hue); warning would be neon yellow in dark theme
-			return r.status === "error" ? "error" : r.status === "interrupted" ? "muted" : "syntaxString";
+			// Errors and interruptions retain state colors; all other tools get a stable name-based hue.
+			return r.status === "error" ? "error" : r.status === "interrupted" ? "muted" : toolColor(r.name);
 		case "compaction":
 			return "success"; // dsh: context spans are desaturated green, not warn yellow
 		case "marker":
 			return "muted";
 	}
+}
+
+/** Deterministically assign built-in and custom tool names a theme-aware hue. */
+function toolColor(name: string): (typeof TOOL_COLORS)[number] {
+	let hash = 0;
+	for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+	return TOOL_COLORS[(hash >>> 0) % TOOL_COLORS.length]!;
 }
 
 function wrapText(text: string, width: number): string[] {
