@@ -137,11 +137,11 @@ export class TraceOverlay implements Component {
 			this.done();
 			return;
 		}
-		const bodyHeight = Math.max(4, (process.stdout.rows ?? 24) - 8);
+		const pageStep = this.pageStep();
 		if (matchesKey(data, "up") || data === "k") this.move(-1);
 		else if (matchesKey(data, "down") || data === "j") this.move(1);
-		else if (matchesKey(data, "pageUp")) this.move(-bodyHeight);
-		else if (matchesKey(data, "pageDown")) this.move(bodyHeight);
+		else if (matchesKey(data, "pageUp")) this.move(-pageStep);
+		else if (matchesKey(data, "pageDown")) this.move(pageStep);
 		else if (data === "c" || data === "e") {
 			// fold/expand every turn at once — dsh's collapse-all toggle
 			const collapse = data === "c";
@@ -175,8 +175,15 @@ export class TraceOverlay implements Component {
 			this.jumpMatch(1);
 		} else if (data === "N") {
 			this.jumpMatch(-1);
-		} else if (matchesKey(data, "space") || matchesKey(data, "return")) {
+		} else if (matchesKey(data, "return")) {
+			// Enter drills into a record; headers have no separate detail page, so
+			// they use the same key to toggle their turn.
 			this.activate();
+		} else if (matchesKey(data, "space")) {
+			// Space consistently changes expansion, never opens a msg/tool inspector.
+			// A selected record folds its owning turn, which makes the operation useful
+			// without requiring the user to move back to the turn header first.
+			this.toggleSelectedTurn();
 		}
 		this.tui.requestRender();
 	}
@@ -202,11 +209,21 @@ export class TraceOverlay implements Component {
 
 	private handleInspectorInput(data: string): void {
 		if (matchesKey(data, "escape") || data === "q") {
+			// q/Esc are hierarchical: go back here, close from the trace list.
 			this.inspector = null;
 		} else if (matchesKey(data, "up") || data === "k") {
 			this.inspector!.scroll = Math.max(0, this.inspector!.scroll - 1);
 		} else if (matchesKey(data, "down") || data === "j") {
 			this.inspector!.scroll++;
+		} else if (matchesKey(data, "pageUp")) {
+			this.inspector!.scroll = Math.max(0, this.inspector!.scroll - this.pageStep());
+		} else if (matchesKey(data, "pageDown")) {
+			this.inspector!.scroll += this.pageStep();
+		} else if (data === "g") {
+			this.inspector!.scroll = 0;
+		} else if (data === "G") {
+			// renderInspector clamps this sentinel to the actual final scroll offset.
+			this.inspector!.scroll = Number.MAX_SAFE_INTEGER;
 		} else if (data === "x") {
 			// Expand textual fields only. Images/base64 and signatures stay redacted.
 			this.inspector!.expanded = !this.inspector!.expanded;
@@ -220,6 +237,14 @@ export class TraceOverlay implements Component {
 		this.tui.requestRender();
 	}
 
+	private pageStep(): number {
+		// The trace list and inspector use the same half-page step. The renderer
+		// may reserve a little less chrome in a narrow terminal, which only makes
+		// the jump conservatively smaller than half the visible inspector.
+		const estimatedBodyHeight = Math.max(4, (process.stdout.rows ?? 24) - 8);
+		return Math.max(1, Math.floor(estimatedBodyHeight / 2));
+	}
+
 	private move(delta: number): void {
 		this.select(this.selected + delta);
 		this.follow = false;
@@ -229,13 +254,30 @@ export class TraceOverlay implements Component {
 		this.selected = Math.max(0, Math.min(this.rows.length - 1, idx));
 	}
 
+	private toggleSelectedTurn(): void {
+		const row = this.rows[this.selected];
+		if (!row) return;
+		const turn = row.type === "header" ? row.turn : this.store.records[row.index]?.turn;
+		if (turn === undefined) return;
+
+		const wasCollapsed = this.collapsed.has(turn);
+		if (wasCollapsed) this.collapsed.delete(turn);
+		else this.collapsed.add(turn);
+		this.rebuildRows();
+
+		// If a record just disappeared into its collapsed turn, retain context by
+		// placing the cursor on that turn's header rather than its former row index.
+		if (!wasCollapsed) {
+			const headerIndex = this.rows.findIndex((candidate) => candidate.type === "header" && candidate.turn === turn);
+			if (headerIndex >= 0) this.select(headerIndex);
+		}
+	}
+
 	private activate(): void {
 		const row = this.rows[this.selected];
 		if (!row) return;
 		if (row.type === "header") {
-			if (this.collapsed.has(row.turn)) this.collapsed.delete(row.turn);
-			else this.collapsed.add(row.turn);
-			this.rebuildRows();
+			this.toggleSelectedTurn();
 			return;
 		}
 		const record = this.store.records[row.index];
@@ -386,11 +428,11 @@ export class TraceOverlay implements Component {
 		if (this.inspector)
 			return this.theme.fg(
 				"muted",
-				` j/k scroll · x ${this.inspector.expanded ? "collapse long text" : "expand long text"} · r ${this.inspector.showRaw ? "hide raw" : "raw JSON"} · esc back`,
+				` j/k move · pgUp/pgDn page · g/G top/end · x ${this.inspector.expanded ? "collapse long text" : "expand long text"} · r ${this.inspector.showRaw ? "hide raw" : "raw JSON"} · esc back`,
 			);
 		let hint = this.theme.fg(
 			"muted",
-			" j/k move · enter/space fold+inspect · c/e fold all · [/] turns · / search · g/G top/end · q close",
+			" j/k move · enter inspect · space fold turn · c/e fold all · [/] turns · / search · g/G top/end · q close",
 		);
 		this.ensureMatches();
 		if (this.query && this.matches.length > 0) {

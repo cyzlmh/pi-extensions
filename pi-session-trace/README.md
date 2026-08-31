@@ -20,17 +20,17 @@ Then `/reload` or restart pi.
 
 | Key | Action |
 |---|---|
-| `j`/`k` / `↑`/`↓` | Move selection |
-| `pgUp`/`pgDn` | Half-page jump |
-| `]` / `[` | Next / previous turn header |
-| `c` / `e` | Fold / expand **all** turns |
-| `enter` | Inspect record / fold on turn headers |
-| `space` | Fold / unfold a turn |
+| `j`/`k` / `↑`/`↓` | Move the trace selection or scroll the inspector |
+| `pgUp`/`pgDn` | Move / scroll by a half page in either view |
+| `g` / `G` | Top / bottom in either view (`G` also re-enables trace tail-follow) |
+| `]` / `[` | Next / previous turn header (trace only) |
+| `c` / `e` | Fold / expand **all** turns (trace only) |
+| `enter` | Inspect a record; fold / unfold a turn header |
+| `space` | Fold / unfold the selected record's turn; never opens an inspector |
 | `x` (in inspector) | Expand / collapse truncated textual fields |
 | `r` (in inspector) | Show / hide sanitized raw source JSON |
-| `/` | Search record contents, `n`/`N` jump between matches |
-| `g` / `G` | Top / bottom (G also re-enables tail-follow) |
-| `q` / `Esc` | Close (or back out of inspector) |
+| `/` | Search trace record contents; `n`/`N` jump between matches |
+| `q` / `Esc` | Close trace, or go back from inspector |
 
 ## What you see
 

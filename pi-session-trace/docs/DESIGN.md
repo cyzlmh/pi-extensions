@@ -115,15 +115,16 @@ type TrajectoryRecord =
 
 | 键 | 动作 |
 |---|---|
-| j/k / ↑↓ | 移动选择（自动滚动） |
-| enter | 进入 inspector / 展开折叠 |
-| space | 折叠/展开 turn |
+| j/k / ↑↓ | trace 中移动选择；inspector 中滚动 |
+| pgUp / pgDn | 两个视图都按半页移动/滚动 |
+| enter | 进入 record inspector；turn header 上展开/折叠 |
+| space | 展开/折叠所选记录所属的 turn，绝不打开 inspector |
 | x（inspector） | 展开/收起默认截断的文字内容 |
 | r（inspector） | 显示/隐藏脱敏 raw source JSON |
-| g / G | 顶部 / 底部（G 同时恢复尾部跟随） |
-| / | 搜索；n/N 跳转命中 |
+| g / G | 两个视图都跳至顶部/底部（trace 的 G 同时恢复尾部跟随） |
+| / | 搜索 trace 记录；n/N 跳转命中 |
 | t | 光标定位到时间轴条，←→ 缩放，移动焦点区间 |
-| q / Esc | 关闭（inspector 内为返回上一层） |
+| q / Esc | trace 中关闭；inspector 内返回上一层 |
 
 ### 渲染性能（E1/FR-11 的实现手段）
 
