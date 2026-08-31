@@ -21,7 +21,8 @@ Then `/reload` or restart pi.
 | Key | Action |
 |---|---|
 | `j`/`k` / `↑`/`↓` | Move the trace selection or scroll the inspector |
-| `pgUp`/`pgDn` | Move / scroll by a half page in either view |
+| `pgUp`/`pgDn` | Move / scroll by one page in either view |
+| `Ctrl-u`/`Ctrl-d` | Move / scroll by a half page in either view |
 | `g` / `G` | Top / bottom in either view (`G` also re-enables trace tail-follow) |
 | `]` / `[` | Next / previous turn header (trace only) |
 | `c` / `e` | Fold / expand **all** turns (trace only) |
@@ -37,7 +38,7 @@ Then `/reload` or restart pi.
 - **Turn-grouped records** — user / assistant / tool / compaction, one dense line each
 - **Provider/model/stop metadata and complete persisted usage/cost breakdowns** in the inspector
 - **Live-only TTFT vs decode timing** on assistant rows when observed live; history never invents these metrics
-- **Timeline strip** — three lanes (user/assistant/tool) on a dsh-style idle-compressed axis. Historical assistant spans are explicitly estimated persisted-entry windows, while the TTFT/decode color split is live-only
+- **Timeline strip** — four lanes (user/assistant/tool/event) on a dsh-style idle-compressed axis. The event lane shows compaction and session markers (model/thinking/branch/bash/custom/unknown); `+` means multiple events share one time bucket. Historical assistant spans are explicitly estimated persisted-entry windows, while the TTFT/decode color split is live-only
 - **Live indicators** — spinner on streaming assistant messages and running tools; tail-follow with a `↓ N new` hint when you scroll up
 - **Structured inspector** — an overview followed by clearly separated model/timing/usage/content/tool-result sections; `r` reveals sanitized raw source JSON when needed
 

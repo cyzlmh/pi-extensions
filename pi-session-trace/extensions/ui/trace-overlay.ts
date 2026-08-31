@@ -137,11 +137,12 @@ export class TraceOverlay implements Component {
 			this.done();
 			return;
 		}
-		const pageStep = this.pageStep();
 		if (matchesKey(data, "up") || data === "k") this.move(-1);
 		else if (matchesKey(data, "down") || data === "j") this.move(1);
-		else if (matchesKey(data, "pageUp")) this.move(-pageStep);
-		else if (matchesKey(data, "pageDown")) this.move(pageStep);
+		else if (matchesKey(data, "pageUp")) this.move(-this.fullPageStep());
+		else if (matchesKey(data, "pageDown")) this.move(this.fullPageStep());
+		else if (matchesKey(data, "ctrl+u")) this.move(-this.halfPageStep());
+		else if (matchesKey(data, "ctrl+d")) this.move(this.halfPageStep());
 		else if (data === "c" || data === "e") {
 			// fold/expand every turn at once — dsh's collapse-all toggle
 			const collapse = data === "c";
@@ -216,9 +217,13 @@ export class TraceOverlay implements Component {
 		} else if (matchesKey(data, "down") || data === "j") {
 			this.inspector!.scroll++;
 		} else if (matchesKey(data, "pageUp")) {
-			this.inspector!.scroll = Math.max(0, this.inspector!.scroll - this.pageStep());
+			this.inspector!.scroll = Math.max(0, this.inspector!.scroll - this.fullPageStep());
 		} else if (matchesKey(data, "pageDown")) {
-			this.inspector!.scroll += this.pageStep();
+			this.inspector!.scroll += this.fullPageStep();
+		} else if (matchesKey(data, "ctrl+u")) {
+			this.inspector!.scroll = Math.max(0, this.inspector!.scroll - this.halfPageStep());
+		} else if (matchesKey(data, "ctrl+d")) {
+			this.inspector!.scroll += this.halfPageStep();
 		} else if (data === "g") {
 			this.inspector!.scroll = 0;
 		} else if (data === "G") {
@@ -237,12 +242,14 @@ export class TraceOverlay implements Component {
 		this.tui.requestRender();
 	}
 
-	private pageStep(): number {
-		// The trace list and inspector use the same half-page step. The renderer
-		// may reserve a little less chrome in a narrow terminal, which only makes
-		// the jump conservatively smaller than half the visible inspector.
-		const estimatedBodyHeight = Math.max(4, (process.stdout.rows ?? 24) - 8);
-		return Math.max(1, Math.floor(estimatedBodyHeight / 2));
+	private fullPageStep(): number {
+		// The renderer may reserve less chrome in a narrow terminal, which only
+		// makes the jump conservatively smaller than one visible page.
+		return Math.max(1, (process.stdout.rows ?? 24) - 8);
+	}
+
+	private halfPageStep(): number {
+		return Math.max(1, Math.floor(this.fullPageStep() / 2));
 	}
 
 	private move(delta: number): void {
@@ -428,11 +435,11 @@ export class TraceOverlay implements Component {
 		if (this.inspector)
 			return this.theme.fg(
 				"muted",
-				` j/k move · pgUp/pgDn page · g/G top/end · x ${this.inspector.expanded ? "collapse long text" : "expand long text"} · r ${this.inspector.showRaw ? "hide raw" : "raw JSON"} · esc back`,
+				` j/k move · pgUp/pgDn page · ^u/^d half page · g/G top/end · x ${this.inspector.expanded ? "collapse long text" : "expand long text"} · r ${this.inspector.showRaw ? "hide raw" : "raw JSON"} · esc back`,
 			);
 		let hint = this.theme.fg(
 			"muted",
-			" j/k move · enter inspect · space fold turn · c/e fold all · [/] turns · / search · g/G top/end · q close",
+			" j/k move · pgUp/pgDn page · ^u/^d half page · enter inspect · space fold turn · c/e fold all · [/] turns · / search · g/G top/end · q close",
 		);
 		this.ensureMatches();
 		if (this.query && this.matches.length > 0) {
@@ -541,7 +548,7 @@ export class TraceOverlay implements Component {
 	}
 
 	/**
-	 * Timeline strip: three lanes (user / assistant / tool) over the records
+	 * Timeline strip: four lanes (user / assistant / tool / event) over the records
 	 * currently visible in the list window — like dsh, which only projects the
 	 * loaded ledger page. This keeps columns fine-grained (each column ≈ a
 	 * single operation) so complementary lane texture is always visible,
@@ -586,7 +593,7 @@ export class TraceOverlay implements Component {
 		const bucket = (ts: number) => Math.max(0, Math.min(cols - 1, Math.floor(((ts - range.start) / span) * cols)));
 
 		type Cell = { ch: string; color: Parameters<Theme["fg"]>[0]; priority: number };
-		const lanes: (Cell | undefined)[][] = [new Array(cols), new Array(cols), new Array(cols)];
+		const lanes: (Cell | undefined)[][] = [new Array(cols), new Array(cols), new Array(cols), new Array(cols)];
 		/**
 		 * Paint [s0, s1) half-open: a column is painted iff it intersects the
 		 * interval. Complementary spans (assistant ends where its tool starts)
@@ -611,6 +618,21 @@ export class TraceOverlay implements Component {
 		const matchCols = new Set<number>();
 		const markMatch = (idx: number, [c0, c1]: [number, number]) => {
 			if (matchIdx.has(idx)) for (let c = c0; c <= c1; c++) matchCols.add(c);
+		};
+		/** Point events share one rail; a + means this time bucket contains multiple events. */
+		const putEvent = (idx: number, ts: number, r: TrajectoryRecord) => {
+			const style = timelineEventStyle(r);
+			if (!style) return;
+			const c = bucket(ts);
+			const existing = lanes[3]![c];
+			if (existing) {
+				existing.ch = "+";
+				existing.color = "warning";
+				existing.priority = Math.max(existing.priority, style.priority);
+			} else {
+				lanes[3]![c] = { ch: style.glyph, color: style.color, priority: style.priority };
+			}
+			if (matchIdx.has(idx)) matchCols.add(c);
 		};
 
 		for (const { r, idx, p } of pairs) {
@@ -639,7 +661,8 @@ export class TraceOverlay implements Component {
 					break;
 				}
 				case "compaction":
-					markMatch(idx, put(1, p.s, p.s, "◆", kindColor(r), 4));
+				case "marker":
+					putEvent(idx, p.s, r);
 					break;
 				default:
 					break;
@@ -647,8 +670,8 @@ export class TraceOverlay implements Component {
 		}
 
 		/**
-		 * Ownership post-pass: points (user messages, compaction diamonds) and
-		 * tool glyphs always claim a full column, so the assistant lane yields
+		 * Ownership post-pass: user points and tool glyphs always claim a full
+		 * column, so the assistant lane yields
 		 * every column they touch — otherwise boundary-sharing looks like
 		 * overlap (a user message and the assistant span it triggers share the
 		 * same start instant). Sequence-diagram semantics: strict alternation
@@ -673,7 +696,7 @@ export class TraceOverlay implements Component {
 		}
 
 		// Cursor rectangle: the selected record's full projected span, drawn as
-		// an inverse band across all three lanes (dsh highlights the whole span,
+		// an inverse band across all four lanes (dsh highlights the whole span,
 		// not just its start column). Header selection spans the entire turn.
 		let cur0 = -1;
 		let cur1 = -1;
@@ -700,13 +723,13 @@ export class TraceOverlay implements Component {
 				if (cur1 < cur0) cur1 = cur0; // sub-column span rounds to its start bucket
 				if (selRow.type === "record") {
 					const k = this.store.records[selRow.index]!.kind;
-					curLane = k === "user" ? 0 : k === "tool" ? 2 : 1;
+					curLane = k === "user" ? 0 : k === "assistant" ? 1 : k === "tool" ? 2 : 3;
 				}
 			}
 		}
-		const labels = ["user", "asst", "tool"];
+		const labels = ["user", "asst", "tool", "event"];
 		const lines: string[] = [];
-		for (let lane = 0; lane < 3; lane++) {
+		for (let lane = 0; lane < 4; lane++) {
 			let body = "";
 			for (let c = 0; c < cols; c++) {
 				const cell = lanes[lane]![c];
@@ -715,18 +738,18 @@ export class TraceOverlay implements Component {
 				if (inCursor)
 					// selectedBg band + glyphs lifted to text brightness — strong
 					// enough to read, still calmer than inverse. Lane-scoped for
-					// record rows; turn headers tint all three lanes.
+					// record rows; turn headers tint all four lanes.
 					s = this.theme.bg("selectedBg", cell ? this.theme.fg("text", cell.ch) : " ");
 				else if (cell && searching && !matchCols.has(c)) s = this.theme.fg("dim", cell.ch);
 				else s = cell ? this.theme.fg(cell.color, cell.ch) : " ";
-				// Turn boundary band: a dim bg stripe through all three lanes —
+				// Turn boundary band: a dim bg stripe through all four lanes —
 				// glyphs survive, the eye gets a hard vertical edge (the cursor
 				// rectangle keeps its inverse highlight instead).
 				if (boundaryCols.has(c) && !inCursor) s = this.theme.bg("scrollbarThumb", s);
 				body += s;
 			}
 			lines.push(
-				this.theme.fg("dim", ` ${labels[lane]!} `) + this.theme.fg("borderMuted", "│") + body + this.theme.fg("borderMuted", "│"),
+				this.theme.fg("dim", ` ${labels[lane]!.padEnd(5)} `) + this.theme.fg("borderMuted", "│") + body + this.theme.fg("borderMuted", "│"),
 			);
 		}
 		// Axis: real clock of the visible window + its busy (idle-compressed) length.
@@ -735,13 +758,13 @@ export class TraceOverlay implements Component {
 		const wallEnd = Math.max(...pairs.map((x) => this.recordEnd(x.r)));
 		const hasHistoricalWindows = pairs.some((x) => x.r.kind === "assistant" && x.r.ttftMs === undefined && x.r.startTs !== undefined);
 		const mode = `busy ${formatDuration(range.end - range.start)} / wall ${formatDuration(wallEnd - wallStart)}${hasHistoricalWindows ? " · history est." : ""}`;
-		const left = `       └${formatClock(wallStart)} `;
+		const left = `        └${formatClock(wallStart)} `;
 		const right = ` ${formatClock(wallEnd)}┘`;
 		const fill = Math.max(1, cols - visibleWidth(left + mode + right) + 2);
 		const leftW = visibleWidth(left);
 		const fillChars: string[] = new Array(fill).fill("─");
 		for (const c of boundaryCols) {
-			const idx = 7 + c - leftW; // lanes start 7 chars in (" user │")
+			const idx = 8 + c - leftW; // lanes start 8 chars in (" event │")
 			if (idx >= 0 && idx < fill) fillChars[idx] = "┬";
 		}
 		// Emit the fill as color runs: ─ in borderMuted, ┬ in dim.
@@ -806,10 +829,37 @@ function badgeColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 	return kindColor(r);
 }
 
+/** Compact event glyphs use semantic colors so they remain recognizable without opening the list. */
+function timelineEventStyle(r: TrajectoryRecord): { glyph: string; color: Parameters<Theme["fg"]>[0]; priority: number } | undefined {
+	switch (r.kind) {
+		case "compaction":
+			return { glyph: "◆", color: kindColor(r), priority: 6 };
+		case "marker":
+			switch (r.marker) {
+				case "model_change":
+					return { glyph: "M", color: "accent", priority: 5 };
+				case "thinking_change":
+					return { glyph: "T", color: "thinkingLow", priority: 5 };
+				case "branch":
+					return { glyph: "↗", color: "syntaxKeyword", priority: 4 };
+				case "bash":
+					return { glyph: "$", color: "syntaxString", priority: 3 };
+				case "custom":
+					return { glyph: "·", color: "muted", priority: 2 };
+				case "note":
+					return { glyph: "•", color: "muted", priority: 2 };
+				case "unknown":
+					return { glyph: "?", color: "warning", priority: 1 };
+			}
+		default:
+			return undefined;
+	}
+}
+
 /**
  * Single source of truth for record-kind colors — used by list badges, the
- * inspector header, and timeline lane cells, so a record always reads the
- * same hue everywhere (dsh: lane-specific hues).
+ * inspector header, and non-event timeline cells, so a record reads the same
+ * hue everywhere (dsh: lane-specific hues).
  */
 function kindColor(r: TrajectoryRecord): Parameters<Theme["fg"]>[0] {
 	switch (r.kind) {

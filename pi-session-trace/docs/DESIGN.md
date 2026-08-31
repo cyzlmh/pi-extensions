@@ -116,7 +116,8 @@ type TrajectoryRecord =
 | 键 | 动作 |
 |---|---|
 | j/k / ↑↓ | trace 中移动选择；inspector 中滚动 |
-| pgUp / pgDn | 两个视图都按半页移动/滚动 |
+| pgUp / pgDn | 两个视图都按整页移动/滚动 |
+| Ctrl-u / Ctrl-d | 两个视图都按半页移动/滚动 |
 | enter | 进入 record inspector；turn header 上展开/折叠 |
 | space | 展开/折叠所选记录所属的 turn，绝不打开 inspector |
 | x（inspector） | 展开/收起默认截断的文字内容 |
@@ -130,7 +131,7 @@ type TrajectoryRecord =
 
 - **帧合并**：事件进 Store 后不直接重绘，合入 ~16ms 的渲染 tick 批量 `requestRender()`——token 流高峰时 UI 稳定（dsh 原版同款策略："coalesced to once per animation frame"）
 - **窗口化**：RecordList 只渲染可视区 ± 5 行 overscan；长文本内容不进入列表渲染路径
-- **泳道与折叠解耦**：时间轴投射“首个可见 record 到末个可见 record 的连续索引区间”（折叠 turn 的 header 会经 turnRange 扩展窗口），折叠/展开不引起泳道重排（dsh 同款行为）；turn 边界用 scrollbarThumb 背景竖带贯穿三道 + 轴上 ┬ 刻度
+- **泳道与折叠解耦**：时间轴投射“首个可见 record 到末个可见 record 的连续索引区间”（折叠 turn 的 header 会经 turnRange 扩展窗口），折叠/展开不引起泳道重排（dsh 同款行为）；user / asst / tool / event 四道泳道中，event 用 glyph 展示 compaction 与各类 marker，冲突时显示 `+`；turn 边界用 scrollbarThumb 背景竖带贯穿四道 + 轴上 ┬ 刻度
 - **增量**：live 追加只 invalidate 尾部；折叠 turn 的内容完全不渲染
 - **预算**：单帧 render() <8ms；1000+ entry 会话打开 <1s（边解析边显示，不全量等）
 
