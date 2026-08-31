@@ -1,20 +1,58 @@
-/** TrajectoryRecord — unified record model. Both LiveSource and ReplaySource emit these. */
+/** TrajectoryRecord — unified record model. Both LiveSource and replay backfill emit these. */
+
+/** Provider-neutral usage persisted by Pi. Keep every known Pi field for inspection. */
+export interface UsageCostInfo {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	total?: number;
+}
 
 export interface UsageInfo {
 	input?: number;
 	output?: number;
 	cacheRead?: number;
 	cacheWrite?: number;
-	cost?: { total?: number };
+	/** Anthropic 1-hour cache-write subset; included in cacheWrite. */
+	cacheWrite1h?: number;
+	/** Provider-reported reasoning tokens; included in output. */
+	reasoning?: number;
+	totalTokens?: number;
+	cost?: UsageCostInfo;
 }
 
-export type MarkerKind = "model_change" | "thinking_change" | "branch" | "bash" | "custom" | "note";
+/**
+ * Non-owning references used by the inspector. Historical entries are objects
+ * returned by the readonly SessionManager; live values are terminal event
+ * objects. They deliberately are not deep-cloned on streaming updates.
+ */
+export interface InspectorSource {
+	source: "history" | "live";
+	entryId?: string;
+	entryType?: string;
+	/** entry.timestamp (JSONL persistence time), converted to Unix ms when valid. */
+	entryTimestamp?: number;
+	/** message.timestamp, if this record originated from a message. */
+	messageTimestamp?: number;
+	rawEntry?: unknown;
+	rawMessage?: unknown;
+}
+
+export type MarkerKind = "model_change" | "thinking_change" | "branch" | "bash" | "custom" | "unknown" | "note";
 
 export interface BaseRecord {
-	/** Stable id (session entry id, or generated for live). */
+	/** Stable record id (session entry id plus a suffix for derived tool rows, or generated live id). */
 	id: string;
-	/** Unix ms. */
+	/**
+	 * Unix ms used to order/display the trace. For history this is normally
+	 * entry.timestamp (persistence time); for live it is the observed event time.
+	 */
 	ts: number;
+	/** Session entry id when persisted; derived tool rows retain their parent entry id. */
+	entryId?: string;
+	/** Inspector-safe, non-owning source reference and timestamp metadata. */
+	inspector?: InspectorSource;
 	/** Owning turn index (1-based). Turn increments on each user record. */
 	turn: number;
 }
@@ -23,23 +61,33 @@ export interface UserRecord extends BaseRecord {
 	kind: "user";
 	text: string;
 	imageCount: number;
+	/** Original string or content-block array, retained by reference for the inspector. */
+	content?: unknown;
 }
 
 export interface AssistantRecord extends BaseRecord {
 	kind: "assistant";
 	text: string;
 	thinkingText?: string;
+	/** Original ordered content-block array, retained by reference for the inspector. */
+	content?: unknown;
+	api?: string;
+	provider?: string;
 	model?: string;
+	responseModel?: string;
+	responseId?: string;
 	usage?: UsageInfo;
 	stopReason?: string;
-	/** live only: message_start → first message_update. */
+	rawStopReason?: string;
+	errorMessage?: string;
+	diagnostics?: unknown;
+	/** live only: message_start → first message_update. Never reconstructed from history. */
 	ttftMs?: number;
-	/** live only: first message_update → message_end. */
+	/** live only: first message_update → message_end. Never reconstructed from history. */
 	decodeMs?: number;
 	/**
-	 * Span start. Live: equals ts (message_start). Replay: entry ts is message
-	 * COMPLETION time, so we approximate the LLM call's start as the previous
-	 * event's timestamp — the agent loop is near-continuous, making this close.
+	 * Historical display-only estimated window start: previous persisted entry.
+	 * It is not an LLM start timestamp and must never be labelled TTFT/decode.
 	 */
 	startTs?: number;
 	streaming?: boolean;
@@ -48,22 +96,43 @@ export interface AssistantRecord extends BaseRecord {
 
 export type ToolStatus = "running" | "ok" | "error" | "interrupted";
 
+export interface ToolResultInfo {
+	toolCallId?: string;
+	toolName?: string;
+	isError?: boolean;
+	/** Original ordered tool-result content blocks, retained by reference. */
+	content?: unknown;
+	details?: unknown;
+	usage?: UsageInfo;
+	addedToolNames?: string[];
+	/** The persisted result entry or terminal live result; no deep copy. */
+	raw?: unknown;
+	entryId?: string;
+	entryTimestamp?: number;
+	messageTimestamp?: number;
+}
+
 export interface ToolRecord extends BaseRecord {
 	kind: "tool";
 	toolCallId: string;
 	name: string;
 	/** One-line preview of args (path, command, …). */
 	argsSummary: string;
+	/** Full provider-neutral tool arguments, retained by reference. */
 	args?: unknown;
+	namespace?: string;
 	status: ToolStatus;
 	output?: string;
 	durationMs?: number;
+	result?: ToolResultInfo;
 }
 
 export interface CompactionRecord extends BaseRecord {
 	kind: "compaction";
 	summary: string;
 	tokensBefore?: number;
+	usage?: UsageInfo;
+	details?: unknown;
 }
 
 export interface MarkerRecord extends BaseRecord {
@@ -71,6 +140,8 @@ export interface MarkerRecord extends BaseRecord {
 	marker: MarkerKind;
 	text: string;
 	detail?: string;
+	usage?: UsageInfo;
+	details?: unknown;
 }
 
 export type TrajectoryRecord = UserRecord | AssistantRecord | ToolRecord | CompactionRecord | MarkerRecord;

@@ -6,11 +6,11 @@
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ 数据源层（两种模式，同一接口）                          │
+│ 数据源层（同一只读来源）                               │
 │                                                     │
-│  LiveSource                ReplaySource             │
-│  pi 生命周期事件订阅         session.jsonl 解析器      │
-│  (当前会话, 实时)           (~/.pi/agent/sessions/)  │
+│  LiveSource                                         │
+│  pi 生命周期事件订阅 + sessionManager.getBranch()     │
+│  (当前会话实时；/resume 后重填当前 root→leaf branch)   │
 └──────────────┬──────────────────────────────────────┘
                │ 产出统一的 TrajectoryRecord 流
                ▼
@@ -30,7 +30,7 @@
 └─────────────────────────────────────────────────────┘
 ```
 
-关键决策：**持久化不写自己的存储**。pi 的 session.jsonl 已是完整的持久层（replay 直接读），live 数据 pi 自己也在落盘——这与 pi-trace-extension 自存 events.jsonl 的路线有本质区别，我们零冗余。
+关键决策：**持久化不写自己的存储，也不直接读写 session JSONL**。Pi 的 session JSONL 是语义消息持久层；本扩展仅通过公开、只读的 `sessionManager.getBranch()` 与生命周期事件重建选中分支。`/resume`/branch 切换仍完全由 Pi 负责。
 
 ## 2. 数据模型
 
@@ -48,29 +48,29 @@ type TrajectoryRecord =
   | TurnBoundary      { turnIndex, ts }
 ```
 
-- **live**：`timing.ttftMs = message_start → 首个 message_update`，`decodeMs = → message_end`（ppmina 同款推导）
-- **replay**：JSONL 只有 entry 级 ISO 时间戳，无 per-token 计时 → 时间轴降级为 entry 间隔，`timing` 缺省时 UI 明确显示为灰色而非留空（E6）
+- **live**：`timing.ttftMs = message_start → 首个 message_update`，`decodeMs = 首个 update → message_end`；二者标为 **live-only**。
+- **history**：Pi JSONL 保存最终 provider-neutral 语义消息，而非 HTTP/SSE 过程。记录保留 `message.timestamp`、`entry.timestamp`、完整 usage/成本、provider/model/response metadata、content blocks、tool result details 等；相邻 entry 仅可画成灰色的“估算持久化窗口”，绝不标为 TTFT/decode。
 
 ## 3. 数据源
 
 ### LiveSource
 
-订阅 pi 扩展事件（与 ppmina 版相同集合）：
+订阅 Pi 扩展事件：
 
 | pi 事件 | 用途 |
 |---|---|
-| `session_start` | 初始化；恢复旧会话时标注"此前记录不可见"分隔线 |
+| `session_start` | 清空旧会话状态，并用 `sessionManager.getBranch()` 回填当前 root→leaf path；绝不使用 `getEntries()` 将其他 branch 混入默认 trace |
 | `turn_start` / `turn_end` | turn 分组与边界 |
 | `message_start` / `message_update` / `message_end` | assistant/user 记录，TTFT/decode 计时 |
 | `tool_execution_start` / `_update` / `_end` | tool 记录状态机 running→ok/error |
 | `session_compact` | compaction 记录 |
 
-### ReplaySource
+### 历史回填
 
-解析 `~/.pi/agent/sessions/--<path>--/<ts>_<uuid>.jsonl`：
-- 流式逐行读（不整文件载入内存），entry → record 增量喂给 Store，打开大文件时列表**边解析边出现**（E2）
-- 会话选择器索引：扫 sessions 目录，读 header + 首条 user 消息做预览，结果缓存（mtime 失效）
-- 需覆盖的 entry 类型：message / compaction / model_change / thinking_level_change / branch_summary / custom（custom 未知类型降级为灰色 marker，不报错）
+不实现私有 `ReplaySource`、文件扫描或 session picker。用户先用 Pi 原生 `/resume` 选择会话，随后 `session_start` 从 readonly `sessionManager.getBranch()` 回填当前 path。
+
+- 首选公开 `getBranch()`；旧宿主若缺少该方法，只有在可由 `getEntries()` + `getLeafId()` 安全重建唯一 parent chain 时才回填。无法证明 branch 时宁可不回填，绝不展示全部 entries。
+- 转换器覆盖已知 entry/message 并保留 raw entry reference；未知、label、session_info 或未来 entry 降级为可检查的 generic marker/raw JSON，而不静默丢弃。
 
 ## 4. TUI 设计
 
@@ -99,10 +99,12 @@ type TrajectoryRecord =
 
 ### Inspector（enter 逐层钻取）
 
-1. 第一层：摘要卡（usage、耗时、model、状态）
-2. 第二层：完整内容（Markdown 组件渲染 assistant/user；tool 显示 JSON args + 输出，输出可滚动）
-3. 第三层：原始 entry JSON（replay）/ 原始事件（live）
-- Esc 逐层返回
+1. 结构化摘要（entry id、来源、message/entry 时间、provider/model/response、usage/成本、stop/error）
+2. 保持原顺序的 content blocks（text/thinking/image/toolCall）及完整工具参数、namespace、tool-result details/usage/added tools
+3. 经脱敏的 raw session entry/live event JSON；未知 entry 也走此通用 inspector
+- 默认先显示分段的 Overview / model / timing / usage / content / tool-result；raw source JSON 默认隐藏，`r` 才显示
+- 长文本、thinking、输出、details 和 raw JSON 默认截断，`x` 展开文字；图片 base64 与 thinking/text/thought signatures 始终不显示
+- Esc 返回
 
 ### SessionPicker（`/trace` 无参且非 live 场景 / `/trace pick`）
 
@@ -116,6 +118,8 @@ type TrajectoryRecord =
 | j/k / ↑↓ | 移动选择（自动滚动） |
 | enter | 进入 inspector / 展开折叠 |
 | space | 折叠/展开 turn |
+| x（inspector） | 展开/收起默认截断的文字内容 |
+| r（inspector） | 显示/隐藏脱敏 raw source JSON |
 | g / G | 顶部 / 底部（G 同时恢复尾部跟随） |
 | / | 搜索；n/N 跳转命中 |
 | t | 光标定位到时间轴条，←→ 缩放，移动焦点区间 |
@@ -142,7 +146,7 @@ type TrajectoryRecord =
 | 空会话 | 居中插画行："还没有记录，去和 pi 说点什么" |
 | JSONL 解析失败行 | 跳过并计数，底部提示 "跳过 N 行损坏记录" |
 | 中断的记录 | 专属 interrupted 样式（dsh 有同款概念） |
-| live 中 pi 恢复旧会话 | 插入"── 以下为本次进程记录 ──"分隔线 |
+| Pi `/resume`/fork/reload | 清空后仅回填 Pi 当前 root→leaf branch；不混入 alternate branches |
 | compaction | 双形态：turn 间独立 / turn 内编号（对齐 dsh 语义） |
 
 ## 7. 里程碑
@@ -158,5 +162,5 @@ M1 先做回放的原因：数据源稳定（JSONL 格式有版本号、可静�
 ## 8. 开放问题（已验证，2026-08-26）
 
 1. ~~subagent 事件在 pi 生命周期里如何暴露？~~ **核心 API 无 subagent 专属事件**（`core/extensions/types.d.ts` 已查）。FR-12 推迟，将来依赖 subagent 扩展（如 pi-subagents）自行暴露的标识。
-2. ~~`session_start` 恢复旧会话时是否会重放历史 message 事件？~~ **不会重放，但可自己回填**：`SessionStartEvent.reason` 区分 `startup/reload/new/resume/fork`，且 `ctx.sessionManager`（ReadonlySessionManager）暴露 `getEntries()`/`getSessionFile()`/`getTree()`。live 模式在 `resume/fork/startup` 时直接从 sessionManager 拿全量 entries 回填 → **live 与 replay 融合成立：恢复即补全轨迹**，且不必重复解析 JSONL。
+2. ~~`session_start` 恢复旧会话时是否会重放历史 message 事件？~~ **不会重放，但可自己回填**：`SessionStartEvent.reason` 区分 `startup/reload/new/resume/fork`，且 `ctx.sessionManager`（ReadonlySessionManager）公开 `getBranch()`。live 模式在 `resume/fork/startup` 时只从当前 leaf 回溯的 branch 回填 → **live 与 history 融合成立：恢复即补全当前轨迹**，且不必解析或写入 JSONL。
 3. 图片块在 pi-tui Image 组件的实际能力边界（FR-14 可行性）——实现 P2 时确认。

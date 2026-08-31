@@ -12,9 +12,9 @@ Then `/reload` or restart pi.
 
 ## Usage
 
-`/trace` — full-screen trajectory of the current session. Collection starts at extension load, and pi's session lifecycle (resume/fork/reload) backfills full history automatically.
+`/trace` — full-screen trajectory of the current session. Collection starts at extension load. On `session_start` (startup/resume/fork/reload), the extension backfills **only Pi's current root-to-leaf branch** via `sessionManager.getBranch()`; alternate branches are not mixed into the default trace.
 
-**Historical sessions**: use pi's native `/resume` (or `pi --resume`) to switch to an old session — the trace backfills its complete trajectory on entry. Session selection is pi's job; this extension only does the trajectory view (same layering as dsh).
+**Historical sessions**: use Pi's native `/resume` (or `pi --resume`) to switch to an old session — `session_start` backfills that selected branch. Session selection and branch navigation remain Pi's job; this extension only renders the read-only trajectory (same layering as dsh).
 
 ## Keys
 
@@ -24,8 +24,10 @@ Then `/reload` or restart pi.
 | `pgUp`/`pgDn` | Half-page jump |
 | `]` / `[` | Next / previous turn header |
 | `c` / `e` | Fold / expand **all** turns |
-| `enter` | Inspect record (summary → full I/O) / fold on turn headers |
+| `enter` | Inspect record / fold on turn headers |
 | `space` | Fold / unfold a turn |
+| `x` (in inspector) | Expand / collapse truncated textual fields |
+| `r` (in inspector) | Show / hide sanitized raw source JSON |
 | `/` | Search record contents, `n`/`N` jump between matches |
 | `g` / `G` | Top / bottom (G also re-enables tail-follow) |
 | `q` / `Esc` | Close (or back out of inspector) |
@@ -33,16 +35,20 @@ Then `/reload` or restart pi.
 ## What you see
 
 - **Turn-grouped records** — user / assistant / tool / compaction, one dense line each
-- **TTFT vs decode timing** on assistant rows (live mode), plus token usage
-- **Timeline strip** — three lanes (user/assistant/tool) on a dsh-style idle-compressed axis: busy time tiles edge-to-edge, idle gaps are removed; TTFT/decode color split in live mode
+- **Provider/model/stop metadata and complete persisted usage/cost breakdowns** in the inspector
+- **Live-only TTFT vs decode timing** on assistant rows when observed live; history never invents these metrics
+- **Timeline strip** — three lanes (user/assistant/tool) on a dsh-style idle-compressed axis. Historical assistant spans are explicitly estimated persisted-entry windows, while the TTFT/decode color split is live-only
 - **Live indicators** — spinner on streaming assistant messages and running tools; tail-follow with a `↓ N new` hint when you scroll up
-- **Inspector** — full message text + thinking, tool args/output, usage & cost, timing
+- **Structured inspector** — an overview followed by clearly separated model/timing/usage/content/tool-result sections; `r` reveals sanitized raw source JSON when needed
 
-## Design notes
+## Data semantics and privacy
 
-- **Local-first & read-only**: never writes to or controls the session, never touches the filesystem — all data comes from pi's event bus and `sessionManager`
-- **One record model** (`TrajectoryRecord`); live events stream in at a ~16 ms coalesced render tick so heavy token streams don't flicker the UI
-- **Colors come 100% from pi's theme tokens** — it adapts to your theme automatically
+- **Local-first & read-only**: never writes to or controls the session, never touches the filesystem — all data comes from Pi's event bus and readonly `sessionManager`. It does not call `appendEntry`, `sendMessage`, or `sendUserMessage`.
+- **What history can restore**: Pi session JSONL stores final provider-neutral semantic messages and entries. The trace preserves their content-block order, message/entry timestamps, assistant `api`/provider/model/response metadata, stop/error/diagnostics, full known usage and cost fields, tool calls, and tool results.
+- **What history cannot restore**: raw HTTP request/response payloads, SSE chunks, retry attempts, transport timings, precise TTFT, and decode time are not persisted by Pi and are never fabricated. TTFT/decode labels are explicitly **live-only**. Historical views show message-start (`message.timestamp`) and entry-persistence time, plus (when useful) an **estimated persisted-entry window**, never a reconstructed timing metric.
+- **Inspector exposure controls**: image base64 and thinking/text signatures are never rendered. Long text, thinking, tool output, details, and raw JSON are truncated by default; press `x` to expand textual content. Expansion still keeps image/base64 and signatures redacted.
+- **One record model** (`TrajectoryRecord`); live events stream in at a ~16 ms coalesced render tick so heavy token streams don't flicker the UI.
+- **Colors come 100% from Pi's theme tokens** — it adapts to your theme automatically.
 
 ## License
 

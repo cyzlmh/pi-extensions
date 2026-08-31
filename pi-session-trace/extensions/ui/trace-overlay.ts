@@ -10,6 +10,7 @@ import {
 	formatTokens,
 	type ToolRecord,
 	type TrajectoryRecord,
+	type UsageInfo,
 } from "../types.ts";
 
 type Row = { type: "header"; turn: number } | { type: "record"; index: number };
@@ -23,7 +24,7 @@ export class TraceOverlay implements Component {
 	private selected = 0;
 	private scroll = 0;
 	private collapsed = new Set<number>();
-	private inspector: { record: TrajectoryRecord; scroll: number } | null = null;
+	private inspector: { record: TrajectoryRecord; scroll: number; expanded: boolean; showRaw: boolean } | null = null;
 	private note = "";
 	/** Tail-following (E1): true until the user scrolls away from the bottom. */
 	private follow = true;
@@ -206,6 +207,15 @@ export class TraceOverlay implements Component {
 			this.inspector!.scroll = Math.max(0, this.inspector!.scroll - 1);
 		} else if (matchesKey(data, "down") || data === "j") {
 			this.inspector!.scroll++;
+		} else if (data === "x") {
+			// Expand textual fields only. Images/base64 and signatures stay redacted.
+			this.inspector!.expanded = !this.inspector!.expanded;
+			this.inspector!.scroll = 0;
+		} else if (data === "r") {
+			// Raw JSON is useful for diagnostics, but is intentionally not part of
+			// the default reading flow.
+			this.inspector!.showRaw = !this.inspector!.showRaw;
+			this.inspector!.scroll = 0;
 		}
 		this.tui.requestRender();
 	}
@@ -229,7 +239,7 @@ export class TraceOverlay implements Component {
 			return;
 		}
 		const record = this.store.records[row.index];
-		if (record) this.inspector = { record, scroll: 0 };
+		if (record) this.inspector = { record, scroll: 0, expanded: false, showRaw: false };
 	}
 
 	// ------------------------------------------------------------------ search
@@ -239,13 +249,13 @@ export class TraceOverlay implements Component {
 			case "user":
 				return r.text;
 			case "assistant":
-				return r.text + (r.thinkingText ?? "");
+				return [r.text, r.thinkingText, r.api, r.provider, r.model, r.responseModel, r.responseId, r.stopReason, r.rawStopReason, r.errorMessage, compactJson(r.usage), compactJson(r.diagnostics)].filter(Boolean).join(" ");
 			case "tool":
-				return `${r.name} ${r.argsSummary} ${r.output ?? ""}`;
+				return [r.name, r.namespace, r.argsSummary, compactJson(r.args), r.output, r.result?.toolName, r.result?.addedToolNames?.join(" "), compactJson(r.result?.usage), compactJson(r.result?.details)].filter(Boolean).join(" ");
 			case "compaction":
-				return r.summary;
+				return `${r.summary} ${compactJson(r.usage)} ${compactJson(r.details)}`;
 			case "marker":
-				return `${r.text} ${r.detail ?? ""}`;
+				return `${r.text} ${r.detail ?? ""} ${compactJson(r.usage)} ${compactJson(r.details)}`;
 		}
 	}
 
@@ -285,7 +295,7 @@ export class TraceOverlay implements Component {
 		if (r.kind === "assistant") {
 			if (r.streaming) return Date.now();
 			if (r.ttftMs !== undefined) return r.ts + r.ttftMs + (r.decodeMs ?? 0);
-			return r.ts; // replay: ts is completion time; span start via recordStart
+			return r.ts; // history: persisted-entry boundary; recordStart may be an estimated window boundary
 		}
 		if (r.kind === "tool") {
 			if (r.status === "running") return Date.now();
@@ -338,9 +348,14 @@ export class TraceOverlay implements Component {
 		const chrome = (showTimeline ? 4 : 0) + 4; // title+sep, sep+hint; timeline = 3 lanes + axis
 		const bodyHeight = Math.max(4, termRows - chrome);
 
+		const totalUsage = this.store.totalUsage();
+		const totalTokens = totalUsage ? (totalUsage.input ?? 0) + (totalUsage.output ?? 0) : 0;
+		const usageSummary = totalUsage
+			? ` · ${formatTokens(totalTokens || totalUsage.totalTokens)} tok${totalUsage.cost?.total !== undefined ? ` · $${totalUsage.cost.total.toFixed(4)}` : ""}`
+			: "";
 		const title =
 			this.theme.bold(this.theme.fg("accent", ` trace `)) +
-			this.theme.fg("muted", `${this.title} · ${this.store.records.length} records`);
+			this.theme.fg("muted", `${this.title} · ${this.store.records.length} records${usageSummary}`);
 		const sep = this.theme.fg("borderMuted", "─".repeat(width));
 		const hint = this.renderHint();
 
@@ -368,7 +383,11 @@ export class TraceOverlay implements Component {
 
 	private renderHint(): string {
 		if (this.searchMode) return this.theme.fg("text", ` /${this.query}`) + this.theme.fg("muted", "█");
-		if (this.inspector) return this.theme.fg("muted", " j/k scroll · esc back");
+		if (this.inspector)
+			return this.theme.fg(
+				"muted",
+				` j/k scroll · x ${this.inspector.expanded ? "collapse long text" : "expand long text"} · r ${this.inspector.showRaw ? "hide raw" : "raw JSON"} · esc back`,
+			);
 		let hint = this.theme.fg(
 			"muted",
 			" j/k move · enter/space fold+inspect · c/e fold all · [/] turns · / search · g/G top/end · q close",
@@ -404,14 +423,16 @@ export class TraceOverlay implements Component {
 		const range = this.store.turnRange(turn);
 		const count = range ? range.last - range.first + 1 : 0;
 		const open = !this.collapsed.has(turn);
+		const usage = this.store.turnUsage(turn);
 		const tokens = formatTokens(this.store.turnTokens(turn));
+		const cost = usage?.cost?.total !== undefined ? ` · $${usage.cost.total.toFixed(4)}` : "";
 		const ts = range ? formatClock(this.store.records[range.first]!.ts) : "";
 		const arrow = open ? "▾" : "▸";
 		// dsh-style dim rail label; stats trail on the right. Turn 0 = pre-first-message markers.
 		return (
 			this.theme.fg("muted", `${arrow} ${turn === 0 ? "Setup" : `Turn ${turn}`}`) +
 			this.theme.fg("borderMuted", " ─────") +
-			this.theme.fg("dim", ` ${ts} · ${tokens} tok${open ? "" : ` · ${count} records`}`)
+			this.theme.fg("dim", ` ${ts} · ${tokens} tok${cost}${open ? "" : ` · ${count} records`}`)
 		);
 	}
 
@@ -430,15 +451,17 @@ export class TraceOverlay implements Component {
 				break;
 			case "assistant": {
 				const a = r as AssistantRecord;
+				const identity = [a.api, a.provider, a.responseModel ?? a.model].filter(Boolean).join("/");
 				let meta: string;
 				if (a.streaming) {
-					meta = this.theme.fg("accent", ` ${SPINNER[this.spinnerIdx % SPINNER.length]} streaming`);
+					meta = this.theme.fg("accent", ` ${SPINNER[this.spinnerIdx % SPINNER.length]} streaming${identity ? ` · ${identity}` : ""}`);
 				} else {
 					const timing =
-						a.ttftMs !== undefined ? ` TTFT ${formatDuration(a.ttftMs)} · decode ${formatDuration(a.decodeMs)}` : "";
+						a.ttftMs !== undefined ? ` · live-only TTFT ${formatDuration(a.ttftMs)} · decode ${formatDuration(a.decodeMs)}` : "";
+					const terminal = a.errorMessage ? " · error" : a.stopReason ? ` · ${a.stopReason}` : "";
 					meta = this.theme.fg(
 						"dim",
-						` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok${timing}`,
+						` ${formatTokens((a.usage?.input ?? 0) + (a.usage?.output ?? 0) || undefined)} tok${identity ? ` · ${identity}` : ""}${terminal}${timing}`,
 					);
 					if (a.interrupted) meta += this.theme.fg("muted", " · interrupted");
 				}
@@ -562,7 +585,9 @@ export class TraceOverlay implements Component {
 						put(1, p.s, p.s + a.ttftMs, "█", "thinkingLow", 2); // TTFT = dim ramp step
 						markMatch(idx, put(1, p.s + a.ttftMs, p.e, "█", "accent", 2)); // decode
 					} else {
-						markMatch(idx, put(1, p.s, p.e, "█", "accent", 2)); // replay: approximated LLM span
+						// Historical entries only support an estimated persisted-entry window,
+						// not a recoverable TTFT/decode split.
+						markMatch(idx, put(1, p.s, p.e, "█", "muted", 2));
 					}
 					break;
 				}
@@ -666,7 +691,8 @@ export class TraceOverlay implements Component {
 		// Turn boundaries are ticked with ┬ at their lane column (dsh marks them too).
 		const wallStart = pairs[0]!.r.ts;
 		const wallEnd = Math.max(...pairs.map((x) => this.recordEnd(x.r)));
-		const mode = `busy ${formatDuration(range.end - range.start)} / wall ${formatDuration(wallEnd - wallStart)}`;
+		const hasHistoricalWindows = pairs.some((x) => x.r.kind === "assistant" && x.r.ttftMs === undefined && x.r.startTs !== undefined);
+		const mode = `busy ${formatDuration(range.end - range.start)} / wall ${formatDuration(wallEnd - wallStart)}${hasHistoricalWindows ? " · history est." : ""}`;
 		const left = `       └${formatClock(wallStart)} `;
 		const right = ` ${formatClock(wallEnd)}┘`;
 		const fill = Math.max(1, cols - visibleWidth(left + mode + right) + 2);
@@ -702,8 +728,8 @@ export class TraceOverlay implements Component {
 
 
 	private renderInspector(width: number, height: number): string[] {
-		const { record } = this.inspector!;
-		const lines = inspectorLines(record, this.theme, width);
+		const { record, expanded, showRaw } = this.inspector!;
+		const lines = inspectorLines(record, this.theme, width, expanded, showRaw);
 		this.inspector!.scroll = Math.max(0, Math.min(this.inspector!.scroll, Math.max(0, lines.length - height)));
 		const view = lines.slice(this.inspector!.scroll, this.inspector!.scroll + height);
 		if (view.length === 0) return [this.theme.fg("muted", "  (empty)")];
@@ -717,6 +743,16 @@ export class TraceOverlay implements Component {
 function clip(text: string, max: number): string {
 	const flat = text.replace(/\s+/g, " ").trim();
 	return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1))}…` : flat;
+}
+
+/** Bounded metadata search text; avoid serializing raw/base64 inspector references. */
+function compactJson(value: unknown): string {
+	if (value === undefined) return "";
+	try {
+		return clip(JSON.stringify(value) ?? "", 2_000);
+	} catch {
+		return "[unserializable]";
+	}
 }
 
 function padVisible(s: string, width: number): string {
@@ -773,68 +809,311 @@ function wrapText(text: string, width: number): string[] {
 	return out;
 }
 
-function inspectorLines(r: TrajectoryRecord, theme: Theme, width: number): string[] {
+function inspectorLines(r: TrajectoryRecord, theme: Theme, width: number, expanded: boolean, showRaw: boolean): string[] {
 	const w = Math.max(20, width - 4);
 	const head = theme.inverse(theme.fg(badgeColor(r), ` ${r.kind.toUpperCase()} `)) + theme.fg("muted", ` ${formatClock(r.ts)}`);
-	const lines: string[] = [head, ""];
-	const push = (text: string, color: Parameters<Theme["fg"]>[0] = "text") => {
-		for (const l of wrapText(text, w)) lines.push(theme.fg(color, l));
+	const lines: string[] = [head];
+	const section = (title: string) => {
+		lines.push("", theme.fg("borderMuted", " ── ") + theme.bold(theme.fg("accent", title)) + theme.fg("borderMuted", " ─────────"));
 	};
+	const push = (text: string, color: Parameters<Theme["fg"]>[0] = "text") => {
+		for (const line of wrapText(text, w)) lines.push(theme.fg(color, line));
+	};
+	const label = (text: string) => lines.push(theme.fg("toolTitle", ` ${text}`));
+	const long = (text: string, color: Parameters<Theme["fg"]>[0] = "text") => {
+		const limited = limitText(text, expanded ? 60_000 : 4_000);
+		push(limited.text, color);
+		if (limited.truncated) lines.push(theme.fg("warning", ` … truncated; press x to ${expanded ? "collapse" : "expand"} text`));
+	};
+	const json = (value: unknown, color: Parameters<Theme["fg"]>[0] = "toolOutput") => long(safeInspectorJson(value, expanded), color);
+
+	section("Overview");
+	if (r.entryId) lines.push(theme.fg("muted", ` entry id: ${r.entryId}`));
+	appendTimeSemantics(lines, r, theme);
 
 	switch (r.kind) {
 		case "user":
-			push(r.text);
-			if (r.imageCount > 0) lines.push(theme.fg("muted", ` [${r.imageCount} image(s)]`));
+			section("Message content · stored order");
+			appendContentBlocks(lines, r.content, r.text, theme, w, expanded);
+			if (r.imageCount > 0) lines.push(theme.fg("muted", ` images: ${r.imageCount} · base64 is never displayed`));
 			break;
 		case "assistant": {
-			if (r.model) lines.push(theme.fg("muted", ` model: ${r.model}`));
-			if (r.ttftMs !== undefined)
-				lines.push(theme.fg("muted", ` timing: TTFT ${formatDuration(r.ttftMs)} · decode ${formatDuration(r.decodeMs)}`));
-			if (r.usage) {
-				lines.push(
-					theme.fg(
-						"muted",
-						` tokens: in ${formatTokens(r.usage.input)} · out ${formatTokens(r.usage.output)} · cache ${formatTokens(r.usage.cacheRead)}` +
-							(r.usage.cost?.total !== undefined ? ` · $${r.usage.cost.total.toFixed(4)}` : ""),
-					),
-				);
+			section("Model & terminal state");
+			appendMetadata(lines, [
+				["api", r.api],
+				["provider", r.provider],
+				["model", r.model],
+				["response model", r.responseModel],
+				["response id", r.responseId],
+				["stop reason", r.stopReason],
+				["raw stop reason", r.rawStopReason],
+			], theme);
+			if (r.errorMessage) {
+				label("error message:");
+				long(r.errorMessage, "error");
 			}
-			if (r.stopReason) lines.push(theme.fg("muted", ` stop: ${r.stopReason}`));
-			lines.push("");
-			push(r.text || "(no text)");
-			if (r.thinkingText) {
-				lines.push("", theme.fg("thinkingText", " ── thinking ──"));
-				push(r.thinkingText, "thinkingText");
+			section("Timing semantics");
+			if (r.ttftMs !== undefined) {
+				lines.push(theme.fg("accent", ` live-only: TTFT ${formatDuration(r.ttftMs)} · decode ${formatDuration(r.decodeMs)}`));
+				lines.push(theme.fg("muted", " unavailable in JSONL; historical replay never reconstructs it"));
+			} else if (r.inspector?.source === "history" && r.startTs !== undefined) {
+				lines.push(theme.fg("muted", ` estimated persisted-entry window: ${formatTimestamp(r.startTs)} → ${formatTimestamp(r.ts)}`));
+				lines.push(theme.fg("muted", " not TTFT or decode timing"));
+			} else {
+				lines.push(theme.fg("muted", " no live timing was observed for this record"));
 			}
+			section("Usage & cost");
+			appendUsage(lines, r.usage, theme);
+			if (r.diagnostics !== undefined) {
+				section("Diagnostics");
+				json(r.diagnostics);
+			}
+			section("Message content · stored order");
+			appendContentBlocks(lines, r.content, r.text, theme, w, expanded);
 			break;
 		}
 		case "tool": {
-			lines.push(
-				theme.fg("muted", ` ${r.name} · ${r.status}${r.durationMs !== undefined ? ` · ${formatDuration(r.durationMs)}` : ""}`),
-				"",
-			);
+			section("Tool call");
+			lines.push(theme.fg("muted", ` ${r.name} · ${r.status}${r.durationMs !== undefined ? ` · ${formatDuration(r.durationMs)}` : ""}`));
+			appendMetadata(lines, [["tool call id", r.toolCallId], ["namespace", r.namespace]], theme);
 			if (r.args !== undefined) {
-				lines.push(theme.fg("toolTitle", " args:"));
-				push(JSON.stringify(r.args, null, 2) ?? "", "toolOutput");
+				label("arguments:");
+				json(r.args);
 			}
-			if (r.output) {
-				lines.push("", theme.fg("toolTitle", " output:"));
-				const out = r.output.length > 20_000 ? `${r.output.slice(0, 20_000)}\n… (truncated)` : r.output;
-				push(out, "toolOutput");
+			if (r.result) {
+				section("Tool result");
+				appendToolResultTimes(lines, r, theme);
+				appendMetadata(lines, [
+					["tool call id", r.result.toolCallId],
+					["tool name", r.result.toolName],
+					["is error", r.result.isError === undefined ? undefined : String(r.result.isError)],
+					["added tools", r.result.addedToolNames?.join(", ")],
+				], theme);
+				if (r.result.details !== undefined) {
+					label("details:");
+					json(r.result.details);
+				}
+				if (r.result.usage) {
+					label("nested usage & cost:");
+					appendUsage(lines, r.result.usage, theme);
+				}
+				if (r.result.content !== undefined) {
+					label("content · stored order:");
+					appendContentBlocks(lines, r.result.content, r.output ?? "", theme, w, expanded);
+				}
+			}
+			if (r.output && r.result?.content === undefined) {
+				label("output:");
+				long(r.output, "toolOutput");
 			}
 			break;
 		}
 		case "compaction":
-			lines.push(theme.fg("muted", ` tokens before: ${formatTokens(r.tokensBefore)}`), "");
-			push(r.summary);
+			section("Compaction");
+			lines.push(theme.fg("muted", ` tokens before: ${formatTokens(r.tokensBefore)}`));
+			label("summary:");
+			long(r.summary);
+			if (r.usage) {
+				section("Usage & cost");
+				appendUsage(lines, r.usage, theme);
+			}
+			if (r.details !== undefined) {
+				section("Details");
+				json(r.details);
+			}
 			break;
 		case "marker":
-			push(r.text);
+			section(r.marker === "unknown" ? "Unsupported entry" : "Marker");
+			lines.push(theme.fg("muted", ` marker: ${r.marker}`));
+			long(r.text);
 			if (r.detail) {
-				lines.push("");
-				push(r.detail, "muted");
+				label("detail:");
+				long(r.detail, "muted");
+			}
+			if (r.usage) {
+				section("Usage & cost");
+				appendUsage(lines, r.usage, theme);
+			}
+			if (r.details !== undefined) {
+				section("Details");
+				json(r.details);
 			}
 			break;
 	}
+
+	if (showRaw) {
+		section("Raw source · sanitized");
+		appendRawInspector(lines, r, theme, w, expanded);
+	} else if (r.inspector?.rawEntry !== undefined || (r.kind === "tool" && r.result?.raw !== undefined)) {
+		lines.push("", theme.fg("muted", " Raw session/event JSON hidden · press r to inspect (sanitized)"));
+	}
 	return lines;
+}
+
+function appendTimeSemantics(lines: string[], r: TrajectoryRecord, theme: Theme): void {
+	const source = r.inspector;
+	if (!source) {
+		lines.push(theme.fg("muted", ` observed time: ${formatTimestamp(r.ts)}`));
+		return;
+	}
+	lines.push(theme.fg("muted", ` source: ${source.source}${source.entryType ? ` · ${source.entryType}` : ""}`));
+	if (source.source === "history") {
+		const message = source.messageTimestamp === undefined ? undefined : formatTimestamp(source.messageTimestamp);
+		const entry = source.entryTimestamp === undefined ? formatTimestamp(r.ts) : formatTimestamp(source.entryTimestamp);
+		lines.push(theme.fg("muted", ` historical timestamps: ${message ? `message start (message.timestamp) ${message} · ` : ""}entry persisted ${entry}`));
+	} else {
+		lines.push(theme.fg("muted", ` live observed time: ${formatTimestamp(r.ts)}${source.messageTimestamp !== undefined ? ` · message.timestamp ${formatTimestamp(source.messageTimestamp)}` : ""}`));
+	}
+}
+
+function appendMetadata(lines: string[], pairs: [string, string | undefined][], theme: Theme): void {
+	for (const [name, value] of pairs) if (value) lines.push(theme.fg("muted", ` ${name}: ${value}`));
+}
+
+function appendToolResultTimes(lines: string[], r: ToolRecord, theme: Theme): void {
+	const result = r.result;
+	if (!result || (result.messageTimestamp === undefined && result.entryTimestamp === undefined)) return;
+	const message = result.messageTimestamp === undefined ? undefined : formatTimestamp(result.messageTimestamp);
+	const entry = result.entryTimestamp === undefined ? undefined : formatTimestamp(result.entryTimestamp);
+	if (r.inspector?.source === "history") {
+		lines.push(theme.fg("muted", ` result timestamps: ${message ? `message start (message.timestamp) ${message}` : "message timestamp unavailable"}${entry ? ` · entry persisted ${entry}` : ""}`));
+	} else {
+		lines.push(theme.fg("muted", ` live result timestamp: ${message ?? entry ?? "unknown"}`));
+	}
+}
+
+function appendUsage(lines: string[], usage: UsageInfo | undefined, theme: Theme): void {
+	if (!usage) {
+		lines.push(theme.fg("muted", " no persisted usage reported"));
+		return;
+	}
+	lines.push(theme.fg("muted", ` tokens: input ${formatTokens(usage.input)} · output ${formatTokens(usage.output)} · total ${formatTokens(usage.totalTokens)}`));
+	lines.push(theme.fg("muted", ` cache: read ${formatTokens(usage.cacheRead)} · write ${formatTokens(usage.cacheWrite)} · write-1h ${formatTokens(usage.cacheWrite1h)} · reasoning ${formatTokens(usage.reasoning)} (subset of output)`));
+	if (usage.cost) {
+		lines.push(theme.fg("muted", ` cost: input ${formatMoney(usage.cost.input)} · output ${formatMoney(usage.cost.output)} · cache-read ${formatMoney(usage.cost.cacheRead)} · cache-write ${formatMoney(usage.cost.cacheWrite)} · total ${formatMoney(usage.cost.total)}`));
+	}
+}
+
+function appendContentBlocks(
+	lines: string[],
+	content: unknown,
+	fallbackText: string,
+	theme: Theme,
+	width: number,
+	expanded: boolean,
+): void {
+	const push = (text: string, color: Parameters<Theme["fg"]>[0] = "text") => {
+		for (const line of wrapText(text, width)) lines.push(theme.fg(color, line));
+	};
+	const long = (text: string, color: Parameters<Theme["fg"]>[0] = "text") => {
+		const limited = limitText(text, expanded ? 60_000 : 4_000);
+		push(limited.text, color);
+		if (limited.truncated) lines.push(theme.fg("warning", ` … truncated; press x to ${expanded ? "collapse" : "expand"} text`));
+	};
+	if (typeof content === "string") {
+		lines.push(theme.fg("muted", " [0] text"));
+		long(content);
+		return;
+	}
+	if (!Array.isArray(content)) {
+		long(fallbackText || "(no content)");
+		return;
+	}
+	const blockLimit = 100;
+	for (let index = 0; index < Math.min(content.length, blockLimit); index++) {
+		const block = content[index] as any;
+		const type = typeof block?.type === "string" ? block.type : "unknown";
+		lines.push(theme.fg("muted", ` [${index}] ${type}`));
+		switch (type) {
+			case "text":
+				long(typeof block.text === "string" ? block.text : "", "text");
+				if (typeof block.textSignature === "string") lines.push(theme.fg("muted", ` text signature: [hidden; ${block.textSignature.length} chars]`));
+				break;
+			case "thinking":
+				if (block.redacted) lines.push(theme.fg("warning", " thinking: [redacted by provider]"));
+				else long(typeof block.thinking === "string" ? block.thinking : "", "thinkingText");
+				if (typeof block.thinkingSignature === "string") lines.push(theme.fg("muted", ` thinking signature: [hidden; ${block.thinkingSignature.length} chars]`));
+				break;
+			case "image":
+				lines.push(theme.fg("muted", ` image: ${block.mimeType ?? "unknown mime"}; base64 omitted (${typeof block.data === "string" ? block.data.length : 0} chars)`));
+				break;
+			case "toolCall":
+				lines.push(theme.fg("muted", ` call: id ${block.id ?? "?"} · name ${block.name ?? "?"}${block.namespace ? ` · namespace ${block.namespace}` : ""}`));
+				lines.push(theme.fg("toolTitle", " arguments:"));
+				long(safeInspectorJson(block.arguments, expanded), "toolOutput");
+				if (typeof block.thoughtSignature === "string") lines.push(theme.fg("muted", ` thought signature: [hidden; ${block.thoughtSignature.length} chars]`));
+				break;
+			default:
+				long(safeInspectorJson(block, expanded), "toolOutput");
+				break;
+		}
+	}
+	if (content.length > blockLimit) lines.push(theme.fg("warning", ` … ${content.length - blockLimit} additional content blocks omitted`));
+}
+
+function appendRawInspector(lines: string[], r: TrajectoryRecord, theme: Theme, width: number, expanded: boolean): void {
+	const source = r.inspector;
+	if (!source) return;
+	const pushRaw = (label: string, value: unknown) => {
+		if (value === undefined) return;
+		lines.push("", theme.fg("toolTitle", ` ${label} (sanitized):`));
+		const limited = limitText(safeInspectorJson(value, expanded), expanded ? 60_000 : 12_000);
+		for (const line of wrapText(limited.text, width)) lines.push(theme.fg("toolOutput", line));
+		if (limited.truncated) lines.push(theme.fg("warning", ` … raw JSON truncated; press x to ${expanded ? "collapse" : "expand"} text`));
+	};
+	pushRaw(source.source === "history" ? "raw session entry" : "raw live event/message", source.rawEntry);
+	if (source.rawMessage && source.rawMessage !== source.rawEntry) pushRaw("raw message", source.rawMessage);
+	if (r.kind === "tool" && r.result?.raw !== undefined && r.result.raw !== source.rawEntry && r.result.raw !== source.rawMessage)
+		pushRaw("raw tool result", r.result.raw);
+}
+
+function safeInspectorJson(value: unknown, expanded: boolean): string {
+	try {
+		return JSON.stringify(sanitizeForInspector(value, expanded), null, 2) ?? "";
+	} catch {
+		return "[unserializable value]";
+	}
+}
+
+function sanitizeForInspector(value: unknown, expanded: boolean, depth = 0, seen = new WeakSet<object>()): unknown {
+	const maxString = expanded ? 16_000 : 2_000;
+	if (typeof value === "string") return limitText(value, maxString).text;
+	if (value === null || typeof value !== "object") return value;
+	if (seen.has(value)) return "[circular]";
+	if (depth > 12) return "[nested value omitted]";
+	seen.add(value);
+	if (Array.isArray(value)) {
+		const limit = expanded ? 300 : 100;
+		const result = value.slice(0, limit).map((item) => sanitizeForInspector(item, expanded, depth + 1, seen));
+		if (value.length > limit) result.push(`[${value.length - limit} additional items omitted]`);
+		return result;
+	}
+	const source = value as Record<string, unknown>;
+	const result: Record<string, unknown> = {};
+	const keys = Object.keys(source);
+	const limit = expanded ? 200 : 100;
+	for (const key of keys.slice(0, limit)) {
+		const item = source[key];
+		if (key === "thinkingSignature" || key === "thoughtSignature" || key === "textSignature") {
+			result[key] = typeof item === "string" ? `[hidden; ${item.length} chars]` : "[hidden]";
+		} else if (key === "data" && source.type === "image") {
+			result[key] = typeof item === "string" ? `[omitted image/base64; ${item.length} chars]` : "[omitted image data]";
+		} else {
+			result[key] = sanitizeForInspector(item, expanded, depth + 1, seen);
+		}
+	}
+	if (keys.length > limit) result["…"] = `${keys.length - limit} additional keys omitted`;
+	return result;
+}
+
+function limitText(text: string, max: number): { text: string; truncated: boolean } {
+	return text.length > max ? { text: `${text.slice(0, max)}\n…`, truncated: true } : { text, truncated: false };
+}
+
+function formatTimestamp(ts: number): string {
+	return Number.isFinite(ts) && ts > 0 ? new Date(ts).toISOString() : "unknown";
+}
+
+function formatMoney(value: number | undefined): string {
+	return value === undefined ? "-" : `$${value.toFixed(6)}`;
 }
