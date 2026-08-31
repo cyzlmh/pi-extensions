@@ -1,3 +1,4 @@
 node_modules/
 .DS_Store
+# npm pack artifacts, including package release dry-runs
 *.tgz
