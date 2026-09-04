@@ -1,0 +1,31 @@
+{
+  "name": "pi-zcode-headers",
+  "version": "0.1.0",
+  "description": "让 pi 伪装成官方 ZCode 客户端 | Make pi pretend to be the official ZCode client — injects ZCode identity headers so the Zhipu backend treats pi traffic as ZCode traffic.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "zcode",
+    "zai",
+    "zhipu",
+    "glm"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cyzlmh/pi-extensions.git",
+    "directory": "pi-zcode-headers"
+  },
+  "bugs": {
+    "url": "https://github.com/cyzlmh/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-zcode-headers"
+}

@@ -10,6 +10,7 @@ My collection of extensions for [pi](https://github.com/earendil-works/pi), the 
 | [`pi-fork-pane`](pi-fork-pane/) | [![npm](https://img.shields.io/npm/v/pi-fork-pane)](https://www.npmjs.com/package/pi-fork-pane) | Split a tmux pane and fork the current pi session into it |
 | [`pi-kimi-code-headers`](pi-kimi-code-headers/) | [![npm](https://img.shields.io/npm/v/pi-kimi-code-headers)](https://www.npmjs.com/package/pi-kimi-code-headers) | Injects device-identity headers so the Kimi backend treats pi traffic as Kimi Code traffic |
 | [`pi-provider-status`](pi-provider-status/) | [![npm](https://img.shields.io/npm/v/pi-provider-status)](https://www.npmjs.com/package/pi-provider-status) | `/status` panel showing remaining quota / balance for your configured providers — Kimi Coding, Zhipu ZAI, MiniMax, DeepSeek, OpenRouter, Claude & Codex subscription windows |
+| [`pi-zcode-headers`](pi-zcode-headers/) | [![npm](https://img.shields.io/npm/v/pi-zcode-headers)](https://www.npmjs.com/package/pi-zcode-headers) | Injects ZCode identity headers so the Zhipu backend treats pi traffic as official ZCode traffic |
 | [`pi-session-trace`](pi-session-trace/) | [![npm](https://img.shields.io/npm/v/pi-session-trace)](https://www.npmjs.com/package/pi-session-trace) | Pure-TUI session trajectory viewer — full-screen dsh-style live trace of the current session (TTFT/decode timeline, idle-compressed lanes); no server or browser |
 
 ## Install
