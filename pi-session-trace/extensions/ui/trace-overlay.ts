@@ -1,7 +1,15 @@
 /** TraceOverlay — main trajectory view: turn-grouped record list + inspector + timeline. */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, matchesKey, truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	matchesKey,
+	truncateToWidth,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { TraceStore } from "../store.ts";
 import {
 	type AssistantRecord,
@@ -17,6 +25,8 @@ type Row = { type: "header"; turn: number } | { type: "record"; index: number };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const OPEN_ANIM_MS = 120;
+/** Screen rows before the list body: title line + separator. */
+const BODY_TOP = 2;
 const TOOL_COLORS = ["syntaxFunction", "syntaxKeyword", "syntaxString", "syntaxNumber", "syntaxType", "accent", "success"] as const satisfies readonly Parameters<Theme["fg"]>[0][];
 
 export class TraceOverlay implements Component {
@@ -33,6 +43,12 @@ export class TraceOverlay implements Component {
 	private animTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Search: / enters input mode, n/N jumps between matches. */
 	private searchMode = false;
+	/**
+	 * Mouse free-scroll (fullscreen mode): while true, render() lets the view
+	 * drift away from the selection instead of clamping it back into view.
+	 * Any keyboard/click selection change re-anchors (sets it false).
+	 */
+	private freeScroll = false;
 	private query = "";
 	private matchesDirty = true;
 	private matches: number[] = [];
@@ -56,7 +72,10 @@ export class TraceOverlay implements Component {
 		this.unsub = this.store.subscribe(() => {
 			this.rebuildRows();
 			this.matchesDirty = true;
-			if (this.follow) this.selected = Math.max(0, this.rows.length - 1);
+			if (this.follow) {
+				this.selected = Math.max(0, this.rows.length - 1);
+				this.freeScroll = false;
+			}
 			this.scheduleRender();
 			this.kickAnimation();
 		});
@@ -123,6 +142,9 @@ export class TraceOverlay implements Component {
 		}
 		this.rows = rows;
 		if (this.selected >= rows.length) this.selected = Math.max(0, rows.length - 1);
+		// Collapse can shrink the list below a free-scrolled offset; keep the
+		// top of the view valid (render() clamps the bottom precisely).
+		this.scroll = Math.min(this.scroll, Math.max(0, rows.length - 1));
 	}
 
 	// ------------------------------------------------------------------ input
@@ -248,6 +270,14 @@ export class TraceOverlay implements Component {
 		return Math.max(1, (process.stdout.rows ?? 24) - 8);
 	}
 
+	/** Visible list height — mirrors the chrome math in render(). */
+	private viewHeight(width: number): number {
+		const termRows = process.stdout.rows ?? 24;
+		const showTimeline = width >= 80 && this.store.records.length > 1;
+		const chrome = (showTimeline ? 4 : 0) + 4; // title+sep, sep+hint; timeline = 3 lanes + axis
+		return Math.max(4, termRows - chrome);
+	}
+
 	private halfPageStep(): number {
 		return Math.max(1, Math.floor(this.fullPageStep() / 2));
 	}
@@ -259,6 +289,7 @@ export class TraceOverlay implements Component {
 
 	private select(idx: number): void {
 		this.selected = Math.max(0, Math.min(this.rows.length - 1, idx));
+		this.freeScroll = false; // keyboard-style navigation re-anchors the view on the selection
 	}
 
 	private toggleSelectedTurn(): void {
@@ -289,6 +320,48 @@ export class TraceOverlay implements Component {
 		}
 		const record = this.store.records[row.index];
 		if (record) this.inspector = { record, scroll: 0, expanded: false, showRaw: false };
+	}
+
+	// ------------------------------------------------------------------ mouse
+
+	/**
+	 * Fullscreen-mode pointer input (regular mode never routes mouse events —
+	 * the terminal owns its scrollback there, so this simply never fires).
+	 * Wheel scrolls the active view; click selects; double-click inspects.
+	 */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		// Search input is keyboard-driven; swallow non-wheel pointer noise but
+		// still allow wheel browsing while typing a query.
+		if (this.searchMode && event.type !== "wheel") return { handled: true };
+		if (event.type === "wheel") return this.handleWheel(event);
+		if (event.type === "click" && event.button === "left") return this.handleClick(event);
+		return undefined;
+	}
+
+	private handleWheel(event: TuiMouseEvent): TuiMouseEventResult {
+		const delta = event.wheelDelta ?? 0; // logical lines; negative scrolls up
+		if (this.inspector) {
+			this.inspector.scroll = Math.max(0, this.inspector.scroll + delta); // renderInspector clamps the bottom
+			return { handled: true };
+		}
+		const maxScroll = Math.max(0, this.rows.length - this.viewHeight(event.width));
+		this.freeScroll = true;
+		this.scroll = Math.max(0, Math.min(this.scroll + delta, maxScroll));
+		// Wheeling back to the bottom re-arms tail-following — same contract as G.
+		this.follow = this.scroll >= maxScroll && delta > 0;
+		return { handled: true };
+	}
+
+	private handleClick(event: TuiMouseEvent): TuiMouseEventResult {
+		// The inspector has no per-line click targets yet; swallow so clicks
+		// never leak to the covered transcript underneath.
+		if (this.inspector) return { handled: true };
+		const idx = this.scroll + (event.y - BODY_TOP);
+		if (event.y < BODY_TOP || idx < 0 || idx >= this.rows.length) return { handled: true };
+		this.select(idx); // re-anchors: keyboard nav after a click stays consistent
+		this.follow = idx === this.rows.length - 1;
+		if ((event.clickCount ?? 1) >= 2) this.activate(); // double-click = enter: inspect record / toggle turn
+		return { handled: true };
 	}
 
 	// ------------------------------------------------------------------ search
@@ -391,11 +464,9 @@ export class TraceOverlay implements Component {
 	}
 
 	render(width: number): string[] {
-		const termRows = process.stdout.rows ?? 24;
 		const narrow = width < 80;
 		const showTimeline = !narrow && this.store.records.length > 1;
-		const chrome = (showTimeline ? 4 : 0) + 4; // title+sep, sep+hint; timeline = 3 lanes + axis
-		const bodyHeight = Math.max(4, termRows - chrome);
+		const bodyHeight = this.viewHeight(width);
 
 		const totalUsage = this.store.totalUsage();
 		const totalTokens = totalUsage ? (totalUsage.input ?? 0) + (totalUsage.output ?? 0) : 0;
@@ -409,9 +480,15 @@ export class TraceOverlay implements Component {
 		const hint = this.renderHint();
 
 		// Clamp scroll before both the list and the timeline consume the window.
+		// Free (mouse-wheel) scrolling lets the view drift off the selection;
+		// keyboard/click navigation keeps the selection driving the window.
 		if (!this.inspector) {
-			if (this.selected < this.scroll) this.scroll = this.selected;
-			if (this.selected >= this.scroll + bodyHeight) this.scroll = this.selected - bodyHeight + 1;
+			if (this.freeScroll) {
+				this.scroll = Math.max(0, Math.min(this.scroll, this.rows.length - bodyHeight));
+			} else {
+				if (this.selected < this.scroll) this.scroll = this.selected;
+				if (this.selected >= this.scroll + bodyHeight) this.scroll = this.selected - bodyHeight + 1;
+			}
 		}
 		const body = this.inspector ? this.renderInspector(width, bodyHeight) : this.renderList(width, bodyHeight);
 		while (body.length < bodyHeight) body.push(""); // pad to full height — the overlay covers the whole screen
@@ -745,7 +822,11 @@ export class TraceOverlay implements Component {
 				// Turn boundary band: a dim bg stripe through all four lanes —
 				// glyphs survive, the eye gets a hard vertical edge (the cursor
 				// rectangle keeps its inverse highlight instead).
-				if (boundaryCols.has(c) && !inCursor) s = this.theme.bg("scrollbarThumb", s);
+				// Turn boundary band: scrollbarThumb became a fg-only theme color in
+				// pi 0.85 — inverse(fg) paints it as a dim background stripe with the
+				// glyph still readable (hard vertical edge, cursor band keeps selectedBg).
+				if (boundaryCols.has(c) && !inCursor)
+						s = this.theme.inverse(this.theme.fg("scrollbarThumb", cell ? cell.ch : " "));
 				body += s;
 			}
 			lines.push(

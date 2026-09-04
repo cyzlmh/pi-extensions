@@ -33,6 +33,17 @@ Then `/reload` or restart pi.
 | `/` | Search trace record contents; `n`/`N` jump between matches |
 | `q` / `Esc` | Close trace, or go back from inspector |
 
+## Mouse (fullscreen mode)
+
+Pi's fullscreen TUI mode routes normalized pointer events to the overlay; regular mode never sends mouse input (the terminal owns its scrollback), so these simply don't fire there.
+
+| Input | Action |
+|---|---|
+| Wheel | Scroll the trace list or the inspector freely — the view drifts off the selection until the next keyboard/click navigation re-anchors it |
+| Wheel back to the bottom | Re-arms tail-following (same contract as `G`) |
+| Click | Select the clicked row |
+| Double-click | Inspect the record / toggle the turn (same as `enter`) |
+
 ## What you see
 
 - **Turn-grouped records** — user / assistant / tool / compaction, one dense line each
