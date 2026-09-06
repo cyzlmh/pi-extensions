@@ -1,0 +1,660 @@
+/**
+ * pi-msb-sandbox — run agent bash commands inside a libkrun microVM.
+ *
+ * Routes every agent `bash` tool call into a persistent, per-project
+ * [microsandbox](https://github.com/microsandbox/microsandbox) microVM
+ * (libkrun/libkrunfw underneath: KVM on Linux, Apple Hypervisor on macOS),
+ * with delta sync of the working directory both ways:
+ *
+ *   - sync-in  before each exec: host files changed since the last call
+ *              (e.g. via the `edit`/`write` tools) are copied into /workspace
+ *   - command  runs inside the VM at /workspace (stdout/stderr stream back,
+ *              exit code passes through, `--timeout` honored)
+ *   - sync-out after each exec: files the command changed are copied back
+ *
+ * Design notes:
+ * - Interception is `tool_call` input mutation (same approach as
+ *   pi-sandbox): the command is replaced by a single line that invokes a
+ *   generated wrapper script. This composes with bash-overriding extensions
+ *   such as pi-bg-tasks (backgrounding wraps the whole wrapper, so sync
+ *   still happens on completion).
+ * - Fail-closed: when enabled and the `msb` binary is present, the mutated
+ *   command NEVER executes the payload on the host. If the VM is not
+ *   reachable the wrapper exits 125 with a diagnostic instead of falling
+ *   back to host execution.
+ * - The payload crosses into the VM as base64 via `msb exec -e CMD_B64=...`
+ *   (env assignment), never interpolated into a shell string.
+ * - Deletions are not synced (tar-based delta both ways). See README.
+ *
+ * Config (merged, project takes precedence):
+ *   - ~/.pi/agent/extensions/msb.json   (global)
+ *   - <cwd>/.pi/msb.json                (project)
+ *
+ * Example .pi/msb.json:
+ * {
+ *   "enabled": true,
+ *   "image": "debian",
+ *   "cpus": 2,
+ *   "memory": "2G",
+ *   "keepOnExit": false,
+ *   "warmup": true,
+ *   "syncExcludes": [".git", "node_modules"]
+ * }
+ *
+ * Commands:
+ *   /msb          status (VM, image, shell, sync paths)
+ *   /msb resync   force a full host -> VM sync
+ *   /msb remove   stop and remove the VM (next bash call re-bootstraps)
+ *
+ * Binary resolution order: $MSB_BIN, ~/.microsandbox/bin/msb, msb on PATH,
+ * ~/.pi/agent/npm/node_modules/.bin/msb (when installed via `pi install`),
+ * npx -y microsandbox (slow fallback).
+ */
+
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+// ---------------------------------------------------------------------------
+// config
+// ---------------------------------------------------------------------------
+
+interface MsbConfig {
+	enabled: boolean;
+	image: string;
+	cpus: number;
+	memory: string;
+	shell: string; // "" = probe (bash if present, else /bin/sh)
+	keepOnExit: boolean;
+	warmup: boolean;
+	syncIn: boolean;
+	syncOut: boolean;
+	syncExcludes: string[];
+}
+
+const DEFAULT_EXCLUDES = [
+	".git",
+	"node_modules",
+	".venv",
+	"venv",
+	"__pycache__",
+	"*.pyc",
+	"dist",
+	"build",
+	".next",
+	"target",
+	"._*", // macOS AppleDouble
+	".DS_Store",
+];
+
+function readJson(file: string): Record<string, unknown> {
+	try {
+		const raw = JSON.parse(readFileSync(file, "utf8"));
+		return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
+}
+
+function loadConfig(cwd: string, agentDir: string): MsbConfig {
+	const globalCfg = readJson(path.join(agentDir, "extensions", "msb.json"));
+	const projectCfg = readJson(path.join(cwd, ".pi", "msb.json"));
+	const merged = { ...globalCfg, ...projectCfg };
+	const asStr = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
+	const asBool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+	const excludes = Array.isArray(merged.syncExcludes)
+		? (merged.syncExcludes as unknown[]).filter((v): v is string => typeof v === "string")
+		: DEFAULT_EXCLUDES;
+	return {
+		enabled: asBool(merged.enabled, true),
+		image: asStr(merged.image, "debian"),
+		cpus: typeof merged.cpus === "number" && merged.cpus > 0 ? Math.floor(merged.cpus) : 2,
+		memory: asStr(merged.memory, "2G"),
+		shell: typeof merged.shell === "string" ? merged.shell : "",
+		keepOnExit: asBool(merged.keepOnExit, false),
+		warmup: asBool(merged.warmup, true),
+		syncIn: asBool(merged.syncIn, true),
+		syncOut: asBool(merged.syncOut, true),
+		syncExcludes: excludes,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// wrapper script (generated once; fully env-driven)
+// ---------------------------------------------------------------------------
+
+const WRAPPER_LINES = [
+	"#!/bin/sh",
+	"# pi-msb-sandbox wrapper - runs one command inside the microsandbox VM.",
+	"# Generated by the pi-msb-sandbox extension. Env-driven, takes no args.",
+	"# Fail-closed: the decoded command is NEVER evaluated on the host.",
+	"set -u",
+	": \"${MSB_BIN:?}\" \"${MSB_BIN_ARGS:?}\" \"${MSB_NAME:?}\" \"${MSB_CMD:?}\"",
+	": \"${MSB_TOKEN:?}\" \"${MSB_SHELL:?}\" \"${MSB_TIMEOUT:?}\" \"${MSB_HOST_CWD:?}\"",
+	": \"${MSB_HOST_MARKER:?}\" \"${MSB_SYNC_IN:?}\" \"${MSB_SYNC_OUT:?}\"",
+	"",
+	"msb() { \"$MSB_BIN\" $MSB_BIN_ARGS \"$@\"; }",
+	"",
+	"# macOS bsdtar: don't create AppleDouble ._ files in archives",
+	"COPYFILE_DISABLE=1; export COPYFILE_DISABLE",
+	"",
+	"if ! msb ping \"$MSB_NAME\" >/dev/null 2>&1; then",
+	"  echo \"pi-msb-sandbox: VM '$MSB_NAME' not reachable - command NOT run on host (fail-closed).\" >&2",
+	"  echo \"pi-msb-sandbox: try /msb for status or /msb remove + retry to re-bootstrap.\" >&2",
+	"  exit 125",
+	"fi",
+	"",
+	"TOFLAG=\"\"",
+	"if [ \"$MSB_TIMEOUT\" -gt 0 ] 2>/dev/null; then",
+	"  TOFLAG=\"--timeout ${MSB_TIMEOUT}s\"",
+	"fi",
+	"",
+	"# --- delta sync IN: host files changed since last call ------------------",
+	"# (names-list + `tar -T FILE`: newline-separated — works on both GNU tar",
+	"#  and busybox tar, unlike --null / -T - which busybox lacks)",
+	"IN_TARB=/tmp/.msb-i-$MSB_TOKEN.tgz",
+	"IN_NAMES=/tmp/.msb-n-$MSB_TOKEN.names",
+	"if [ \"$MSB_SYNC_IN\" = \"1\" ]; then",
+	"  ( cd \"$MSB_HOST_CWD\" && \\",
+	"    find . -type f -newer \"$MSB_HOST_MARKER\" > \"$IN_NAMES\" 2>/dev/null ) || true",
+	"  if [ -s \"$IN_NAMES\" ]; then",
+	"    tar czf \"$IN_TARB\" -C \"$MSB_HOST_CWD\" -T \"$IN_NAMES\" 2>/dev/null",
+	"    if [ -s \"$IN_TARB\" ]; then",
+	"      if msb copy \"$IN_TARB\" \"$MSB_NAME:/tmp/.msb-i-$MSB_TOKEN.tgz\" >/dev/null 2>&1; then",
+	"        msb exec -e T=\"$MSB_TOKEN\" \"$MSB_NAME\" -- /bin/sh -c \\",
+	"          'mkdir -p /workspace && tar xzf \"/tmp/.msb-i-${T}.tgz\" -C /workspace 2>/dev/null; rm -f \"/tmp/.msb-i-${T}.tgz\"' \\",
+	"          >/dev/null 2>&1 && touch \"$MSB_HOST_MARKER\" 2>/dev/null",
+	"      fi",
+	"    fi",
+	"  fi",
+	"  rm -f \"$IN_TARB\" \"$IN_NAMES\" 2>/dev/null",
+	"fi",
+	"",
+	"# --- run the command in the VM; delta-pack what it changed --------------",
+	"# (no -w flag: a missing workdir makes msb exec fail with a misleading",
+	"#  ENOENT; mkdir+cd happens inside the guest instead)",
+	"msb exec -e CMD_B64=\"$MSB_CMD\" -e TOK=\"$MSB_TOKEN\" -e SH=\"$MSB_SHELL\" \\",
+	"  $TOFLAG \"$MSB_NAME\" -- /bin/sh -c '",
+	"  mkdir -p /workspace 2>/dev/null",
+	"  cd /workspace 2>/dev/null || exit 126",
+	"  MARK=/tmp/.msb-m-$TOK",
+	"  OUTG=/tmp/.msb-o-$TOK.tgz",
+	"  # backdate the marker ~2s: guest clocks can be coarse (~100ms ticks),",
+	"  # and files created in the same tick as a fresh marker would be missed",
+	"  # by strict -newer; the small overlap only re-syncs identical content",
+	"  NOW=$(date +%s)",
+	"  if ! touch -d \"@$((NOW - 2))\" \"$MARK\" 2>/dev/null; then",
+	"    touch \"$MARK\" 2>/dev/null || exit 126",
+	"  fi",
+	"  CMD=$(printf %s \"$CMD_B64\" | base64 -d 2>/dev/null) || exit 127",
+	"  \"$SH\" -c \"$CMD\"",
+	"  EC=$?",
+	"  LN=/tmp/.msb-l-$TOK",
+	"  find . -type f -newer \"$MARK\" > \"$LN\" 2>/dev/null",
+	"  tar czf \"$OUTG\" -T \"$LN\" 2>/dev/null",
+	"  rm -f \"$LN\" \"$MARK\" 2>/dev/null",
+	"  exit $EC",
+	"'",
+	"EC=$?",
+	"",
+	"# --- delta sync OUT: copy changed files back to the host -----------------",
+	"if [ \"$MSB_SYNC_OUT\" = \"1\" ]; then",
+	"  OUT_TARB=/tmp/.msb-o-$MSB_TOKEN.tgz",
+	"  TMPD=$(mktemp -d 2>/dev/null)",
+	"  if [ -n \"$TMPD\" ]; then",
+	"    if msb copy \"$MSB_NAME:$OUT_TARB\" \"$TMPD/o.tgz\" >/dev/null 2>&1 && [ -s \"$TMPD/o.tgz\" ]; then",
+	"      ( cd \"$MSB_HOST_CWD\" && tar xzf \"$TMPD/o.tgz\" 2>/dev/null ) || true",
+	"    fi",
+	"    rm -rf \"$TMPD\"",
+	"  fi",
+	"  msb exec -e T=\"$MSB_TOKEN\" \"$MSB_NAME\" -- /bin/sh -c \\",
+	"    'rm -f \"/tmp/.msb-o-${T}.tgz\"' >/dev/null 2>&1 || true",
+	"fi",
+	"exit $EC",
+];
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+interface BinRef {
+	file: string;
+	prefixArgs: string[];
+}
+
+function shq(value: string): string {
+	return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function run(
+	file: string,
+	args: string[],
+	opts: { timeoutMs?: number; capture?: boolean } = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
+	return new Promise((resolve) => {
+		const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		let settled = false;
+		const timer =
+			opts.timeoutMs && opts.timeoutMs > 0
+				? setTimeout(() => {
+						if (!settled) {
+							settled = true;
+							child.kill("SIGKILL");
+							resolve({ code: 124, stdout, stderr: `${stderr}\npi-msb-sandbox: step timed out` });
+						}
+					}, opts.timeoutMs)
+				: undefined;
+		child.stdout?.on("data", (d: Buffer) => {
+			stdout += d.toString();
+			if (stdout.length > 200_000) stdout = stdout.slice(-200_000);
+		});
+		child.stderr?.on("data", (d: Buffer) => {
+			stderr += d.toString();
+			if (stderr.length > 100_000) stderr = stderr.slice(-100_000);
+		});
+		child.on("error", (err) => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			resolve({ code: 127, stdout, stderr: String(err) });
+		});
+		child.on("close", (code) => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			resolve({ code: code ?? 125, stdout, stderr });
+		});
+	});
+}
+
+function fileExists(p: string): boolean {
+	try {
+		statSync(p);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extension
+// ---------------------------------------------------------------------------
+
+export default function (pi: ExtensionAPI) {
+	const cwd = process.cwd();
+	const agentDir = path.join(homedir(), ".pi", "agent");
+	const cfg = loadConfig(cwd, agentDir);
+
+	const stateDir = path.join(agentDir, "extensions", ".msb-sandbox");
+	const wrapperPath = path.join(stateDir, "wrapper.sh");
+	const name = `pi-${randomNameSeed(cwd)}`;
+	const markerPath = path.join(stateDir, `${name}.marker`);
+	const statePath = path.join(stateDir, `${name}.json`);
+	const lockDir = path.join(stateDir, `${name}.lock`);
+
+	let bin: BinRef | null = null;
+	let binResolved = false;
+	let shell = cfg.shell || "/bin/sh";
+	let bootstrapPromise: Promise<void> | undefined;
+	let lastError: string | undefined;
+	let createdHere = false;
+
+	function randomNameSeed(dir: string): string {
+		// deterministic per project dir
+		let h = 0x811c9dc5;
+		for (const c of dir) {
+			h ^= c.codePointAt(0) ?? 0;
+			h = Math.imul(h, 0x01000193) >>> 0;
+		}
+		return h.toString(16).padStart(8, "0");
+	}
+
+	function msb(args: string[], opts: { timeoutMs?: number } = {}) {
+		if (!bin) throw new Error("msb binary not resolved");
+		return run(bin.file, [...bin.prefixArgs, ...args], { timeoutMs: opts.timeoutMs ?? 60_000 });
+	}
+
+	async function resolveBin(): Promise<BinRef | null> {
+		if (binResolved) return bin;
+		binResolved = true;
+		const candidates: Array<{ file: string; prefixArgs: string[] }> = [];
+		if (process.env.MSB_BIN) candidates.push({ file: process.env.MSB_BIN, prefixArgs: [] });
+		candidates.push({ file: path.join(homedir(), ".microsandbox", "bin", "msb"), prefixArgs: [] });
+		candidates.push({ file: "msb", prefixArgs: [] });
+		candidates.push({
+			file: path.join(agentDir, "npm", "node_modules", ".bin", "msb"),
+			prefixArgs: [],
+		});
+		for (const candidate of candidates) {
+			const probe = await run(candidate.file, [...candidate.prefixArgs, "--version"], {
+				timeoutMs: 8_000,
+			});
+			if (probe.code === 0) {
+				bin = candidate;
+				return bin;
+			}
+		}
+		bin = { file: "npx", prefixArgs: ["-y", "microsandbox"] };
+		return bin;
+	}
+
+	function ensureWrapper(): void {
+		if (!existsSync(wrapperPath)) {
+			mkdirSync(stateDir, { recursive: true });
+			writeFileSync(wrapperPath, `${WRAPPER_LINES.join("\n")}\n`, { mode: 0o755 });
+			chmodSync(wrapperPath, 0o755);
+		}
+	}
+
+	function readState(): { shell?: string } {
+		try {
+			const raw = JSON.parse(readFileSync(statePath, "utf8"));
+			return typeof raw === "object" && raw !== null ? raw : {};
+		} catch {
+			return {};
+		}
+	}
+
+	function writeState(): void {
+		writeFileSync(statePath, JSON.stringify({ shell, image: cfg.image }, null, 2));
+	}
+
+	async function ping(): Promise<boolean> {
+		if (!bin) return false;
+		return (await msb(["ping", name], { timeoutMs: 15_000 })).code === 0;
+	}
+
+	function acquireLock(): boolean {
+		try {
+			mkdirSync(lockDir);
+			return true;
+		} catch {
+			try {
+				const st = statSync(lockDir);
+				if (Date.now() - st.mtimeMs > 180_000) {
+					rmSync(lockDir, { recursive: true, force: true });
+					mkdirSync(lockDir);
+					return true;
+				}
+			} catch {
+				/* ignore */
+			}
+			return false;
+		}
+	}
+
+	function releaseLock(): void {
+		rmSync(lockDir, { recursive: true, force: true });
+	}
+
+	function touchMarker(): void {
+		const now = new Date();
+		try {
+			utimesSync(markerPath, now, now);
+		} catch {
+			writeFileSync(markerPath, "");
+		}
+	}
+
+	async function fullSyncIn(): Promise<void> {
+		const tmp = mkdtempSync(path.join(path.sep, "tmp", "msb-sync-"));
+		try {
+			const tarball = path.join(tmp, "init.tgz");
+			const tarArgs = ["czf", tarball];
+			for (const ex of cfg.syncExcludes) tarArgs.push(`--exclude=${ex}`);
+			tarArgs.push("-C", cwd, ".");
+			const packed = await run("tar", tarArgs, { timeoutMs: 120_000 });
+			if (packed.code !== 0) throw new Error(`host tar failed: ${packed.stderr.slice(0, 300)}`);
+			const token = randomBytes(4).toString("hex");
+			const copied = await msb(["copy", tarball, `${name}:/tmp/.msb-init-${token}.tgz`], {
+				timeoutMs: 300_000,
+			});
+			if (copied.code !== 0) throw new Error(`msb copy in failed: ${copied.stderr.slice(0, 300)}`);
+			const untarred = await msb([
+				"exec",
+				"-e",
+				`T=${token}`,
+				name,
+				"--",
+				"/bin/sh",
+				"-c",
+				'mkdir -p /workspace && tar xzf "/tmp/.msb-init-${T}.tgz" -C /workspace && rm -f "/tmp/.msb-init-${T}.tgz"',
+			]);
+			if (untarred.code !== 0) throw new Error(`guest untar failed: ${untarred.stderr.slice(0, 300)}`);
+			touchMarker();
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	}
+
+	async function probeShell(): Promise<void> {
+		if (cfg.shell) {
+			shell = cfg.shell;
+			return;
+		}
+		const cached = readState().shell;
+		if (cached) {
+			shell = cached;
+			return;
+		}
+		const probe = await msb(["exec", name, "--", "/bin/sh", "-c", "command -v bash || command -v sh"]);
+		const found = probe.stdout.trim().split("\n").filter(Boolean).pop();
+		shell = found || "/bin/sh";
+	}
+
+	async function bootstrap(): Promise<void> {
+		if (!bin) return;
+		const locked = acquireLock();
+		if (!locked) {
+			// someone else is bootstrapping; wait for the VM to appear
+			for (let i = 0; i < 60; i++) {
+				if (await ping()) return;
+				await new Promise((r) => setTimeout(r, 1_000));
+			}
+			throw new Error("timed out waiting for concurrent bootstrap");
+		}
+		try {
+			if (await ping()) {
+				await probeShell();
+				return;
+			}
+			const started = await msb(["start", name], { timeoutMs: 60_000 });
+			if (started.code !== 0) {
+				const created = await msb(
+					["create", "-n", name, "-c", String(cfg.cpus), "-m", cfg.memory, cfg.image],
+					{ timeoutMs: 600_000 },
+				);
+				if (created.code !== 0) {
+					throw new Error(`msb create failed: ${created.stderr.slice(0, 400)}`);
+				}
+				createdHere = true;
+			}
+			for (let i = 0; i < 45; i++) {
+				if (await ping()) break;
+				await new Promise((r) => setTimeout(r, 1_000));
+			}
+			if (!(await ping())) throw new Error("VM did not become reachable");
+			await probeShell();
+			await fullSyncIn();
+			writeState();
+		} finally {
+			releaseLock();
+		}
+	}
+
+	async function ensureReady(): Promise<void> {
+		if (!cfg.enabled) return;
+		if (!bin) await resolveBin();
+		if (!bin) return;
+		ensureWrapper();
+		if (!bootstrapPromise) {
+			lastError = undefined;
+			bootstrapPromise = bootstrap().catch((err) => {
+				lastError = err instanceof Error ? err.message : String(err);
+				console.error(`pi-msb-sandbox: bootstrap failed — ${lastError}`);
+			}).finally(() => {
+				bootstrapPromise = undefined;
+			});
+		}
+		await bootstrapPromise;
+	}
+
+	async function removeVm(): Promise<void> {
+		if (!bin) return;
+		await msb(["stop", name], { timeoutMs: 60_000 }).catch(() => undefined);
+		await msb(["remove", name], { timeoutMs: 60_000 }).catch(() => undefined);
+		rmSync(markerPath, { force: true });
+		rmSync(statePath, { force: true });
+	}
+
+	// -----------------------------------------------------------------------
+	// lifecycle
+	// -----------------------------------------------------------------------
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (!cfg.enabled) return;
+		await resolveBin();
+		if (cfg.warmup) {
+			ctx.ui.setStatus("msb", ctx.ui.theme.fg("accent", `msb: starting ${name}`));
+			void ensureReady().then(() => {
+				if (lastError) {
+					ctx.ui.setStatus("msb", ctx.ui.theme.fg("error", "msb: bootstrap failed (/msb)"));
+					ctx.ui.notify(`pi-msb-sandbox: bootstrap failed — ${lastError}`, "error");
+				} else {
+					ctx.ui.setStatus("msb", ctx.ui.theme.fg("accent", `msb: ${name} ✓`));
+					ctx.ui.notify(
+						`pi-msb-sandbox: bash now runs in a microVM (${cfg.image}); workspace synced to /workspace.`,
+						"info",
+					);
+				}
+			});
+		}
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		ctx.ui.setStatus("msb", undefined);
+		if (!cfg.enabled || cfg.keepOnExit || !createdHere) return;
+		if (!bin) await resolveBin();
+		if (!bin) return;
+		ctx.ui.setStatus("msb", ctx.ui.theme.fg("muted", "msb: stopping"));
+		await removeVm().catch(() => undefined);
+	});
+
+	// -----------------------------------------------------------------------
+	// bash routing (tool_call input mutation — composes with pi-bg-tasks)
+	// -----------------------------------------------------------------------
+
+	pi.on("tool_call", async (event) => {
+	// NOTE: don't use isToolCallEventType here — in the shipped bundle its real
+	// signature is isToolCallEventType(toolName, event) (a comparator), so
+	// passing (event) throws "reading 'toolName' of undefined".
+	const toolCall = event as undefined | { toolName?: string; input?: unknown };
+	if (toolCall?.toolName !== "bash") return;
+		if (!cfg.enabled) return;
+		if (!bin) await resolveBin();
+		if (!bin) return; // no binary at all: leave on host (announced at startup)
+		const input = event.input as { command?: unknown; timeout?: unknown };
+		if (typeof input.command !== "string" || input.command.trim() === "") return;
+
+		await ensureReady();
+
+		const timeoutSec =
+			typeof input.timeout === "number" && Number.isFinite(input.timeout) && input.timeout > 0
+				? Math.floor(input.timeout)
+				: 0;
+		const token = randomBytes(6).toString("hex");
+		const payload = Buffer.from(input.command, "utf8").toString("base64");
+
+		input.command = [
+			`MSB_BIN=${shq(bin.file)}`,
+			`MSB_BIN_ARGS=${shq(bin.prefixArgs.join(" "))}`,
+			`MSB_NAME=${shq(name)}`,
+			`MSB_CMD=${shq(payload)}`,
+			`MSB_TOKEN=${shq(token)}`,
+			`MSB_SHELL=${shq(shell)}`,
+			`MSB_TIMEOUT=${timeoutSec}`,
+			`MSB_HOST_CWD=${shq(cwd)}`,
+			`MSB_HOST_MARKER=${shq(markerPath)}`,
+			`MSB_SYNC_IN=${cfg.syncIn ? 1 : 0}`,
+			`MSB_SYNC_OUT=${cfg.syncOut ? 1 : 0}`,
+			shq(wrapperPath),
+		].join(" ");
+	});
+
+	// -----------------------------------------------------------------------
+	// system prompt note
+	// -----------------------------------------------------------------------
+
+	pi.on("before_agent_start", async (event) => {
+		if (!cfg.enabled || !bin) return;
+		const note = [
+			"",
+			"## Bash sandbox (pi-msb-sandbox)",
+			`Every bash command executes inside an isolated Linux microVM (${cfg.image}, microsandbox/libkrun), not on the host. The project directory is synced both ways at /workspace inside the VM — files changed by commands (or by your read/write/edit tools between commands) sync automatically, deletions do not. ${cfg.image} ships a minimal toolset: install what you need with apt/apk inside the VM; installed packages persist for the session. If a command fails with "VM not reachable", tell the user to run /msb.`,
+		].join("\n");
+		return { systemPrompt: `${event.systemPrompt}${note}` };
+	});
+
+	// -----------------------------------------------------------------------
+	// /msb command
+	// -----------------------------------------------------------------------
+
+	pi.registerCommand("msb", {
+		description: "microsandbox VM status (resync | remove)",
+		handler: async (args, ctx) => {
+			const sub = args.trim().toLowerCase();
+			if (!cfg.enabled) {
+				ctx.ui.notify("pi-msb-sandbox: disabled in config — bash runs on the host.", "warn");
+				return;
+			}
+			if (!bin) await resolveBin();
+
+			if (sub === "remove") {
+				await removeVm();
+				ctx.ui.notify(`Removed VM ${name}. The next bash call re-bootstraps it.`, "info");
+				return;
+			}
+			if (sub === "resync") {
+				if (!(await ping())) {
+					await ensureReady();
+				}
+				if (bin && (await ping())) {
+					await fullSyncIn();
+					ctx.ui.notify(`Full host → VM sync done (${cwd} → ${name}:/workspace).`, "info");
+				} else {
+					ctx.ui.notify("VM not reachable — resync failed.", "error");
+				}
+				return;
+			}
+
+			const reachable = bin ? await ping() : false;
+			const lines = [
+				`enabled:    ${cfg.enabled}`,
+				`binary:     ${bin ? `${bin.file} ${bin.prefixArgs.join(" ")}`.trim() : "not found (set MSB_BIN or npm i -g microsandbox)"}`,
+				`VM name:    ${name}`,
+				`VM status:  ${reachable ? "reachable ✓" : `down${lastError ? ` — ${lastError}` : ""}`}`,
+				`image:      ${cfg.image} (cpus ${cfg.cpus}, memory ${cfg.memory})`,
+				`shell:      ${shell}`,
+				`workspace:  ${cwd} ⇄ ${name}:/workspace`,
+				`sync:       in=${cfg.syncIn ? "on" : "off"} out=${cfg.syncOut ? "on" : "off"} (deletions never sync)`,
+				`excludes:   ${cfg.syncExcludes.join(", ")}`,
+			];
+			ctx.ui.notify(lines.join("\n"), reachable ? "info" : "warn");
+		},
+	});
+}

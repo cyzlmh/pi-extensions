@@ -1,0 +1,38 @@
+{
+	"name": "pi-msb-sandbox",
+	"version": "0.1.0",
+	"description": "Run agent bash commands inside a libkrun microVM (microsandbox) with two-way workspace sync — fail-closed isolation for pi",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi",
+		"pi-coding-agent",
+		"sandbox",
+		"libkrun",
+		"microvm",
+		"microsandbox",
+		"isolation"
+	],
+	"license": "MIT",
+	"author": "cyzlmh",
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/cyzlmh/pi-extensions.git",
+		"directory": "pi-msb-sandbox"
+	},
+	"bugs": {
+		"url": "https://github.com/cyzlmh/pi-extensions/issues"
+	},
+	"homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-msb-sandbox",
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"optionalDependencies": {
+		"microsandbox": "^0.6.17"
+	}
+}
