@@ -12,7 +12,7 @@
   Balance CNY  128.40
 ```
 
-The panel opens immediately; each section fills in as its request settles. Press `r` to refresh, `Esc`/`q` to close. In non-interactive mode the report is printed as a plain notification instead.
+The panel opens immediately as a scrollable overlay; each section fills in as its request settles. Scroll with `↑`/`↓` (or `j`/`k`), `PgUp`/`PgDn` by page, `Ctrl+u`/`Ctrl+d` by half page, `Home`/`End` (or `g`/`G`) to jump to top/bottom; the mouse wheel also works over the panel in fullscreen mode. Press `r` to refresh, `Esc`/`q` to close. In non-interactive mode the report is printed as a plain notification instead.
 
 ## Install
 

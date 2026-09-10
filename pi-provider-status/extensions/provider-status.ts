@@ -48,10 +48,14 @@
  *
  *             The panel opens immediately; each section fills in as its
  *             request settles. Press r to refresh, Esc (or q) to close.
+ *             The panel is a clamped, scrollable overlay in both TUI modes:
+ *             ↑/↓/j/k line, PgUp/PgDn page, ctrl+u/d half page, Home/End
+ *             (g/G) top/bottom, plus mouse wheel in fullscreen; it stays
+ *             pinned to the bottom as sections settle.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, wrapTextWithAnsi, type TUI } from "@earendil-works/pi-tui";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
@@ -1000,7 +1004,7 @@ export default function (pi: ExtensionAPI) {
 					})
 					.join("\n\n");
 				const updated = lastUpdated ? `updated ${new Date(lastUpdated).toLocaleTimeString()}` : "";
-				const footer = st.dim(interactive ? `r refresh · Esc/q close · ${updated}` : updated);
+				const footer = st.dim(interactive ? `↑↓/PgUp scroll · r refresh · Esc/q close · ${updated}` : updated);
 				return `${body}\n\n${footer}`;
 			};
 
@@ -1010,7 +1014,16 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+			// The panel opens as a capturing overlay in both TUI modes: in
+			// fullscreen the input-dock slot clips a tall plain component and
+			// the alt screen routes arrows/PgUp/PgDn/wheel to the chat transcript,
+			// and in regular mode an overlay taller than the terminal gets sliced
+			// by the compositor (content beyond maxHeight is dropped, scrollback
+			// never sees it). A focused overlay receives viewport keys in both
+			// modes, so the panel clamps itself to the terminal height and scrolls
+			// itself. (Wheel only reaches us in fullscreen; regular mode leaves
+			// the mouse to the terminal.)
+			const tuiFactory = async (tui: TUI, theme: any, _kb: unknown, done: () => void) => {
 				const st: Styler = {
 					bold: (s) => theme.bold(s),
 					dim: (s) => theme.fg("dim", s),
@@ -1019,6 +1032,8 @@ export default function (pi: ExtensionAPI) {
 				};
 				let cachedWidth = 0;
 				let cachedLines: string[] = [];
+				let scrollTop = 0;
+				let stickyBottom = true;
 				const refresh = (): void => {
 					cachedWidth = 0;
 					tui.requestRender();
@@ -1026,25 +1041,79 @@ export default function (pi: ExtensionAPI) {
 				onUpdate = refresh;
 				// Show the panel immediately; each section fills in as its query settles.
 				runAll();
+
+				// ── Scrolling (overlay is clamped to the terminal height) ──
+				// SGR wheel sequences reach handleInput in fullscreen because a
+				// focused overlay defers viewport input; 64 = wheel up, 65 = down.
+				const wheelRe = /^\x1b\[<(6[45]);/;
+				// Cap one line below the terminal so the 100% overlay never slices us.
+				const viewportH = (): number => Math.max(4, tui.terminal.rows - 1);
+				const scrollable = (): boolean => cachedLines.length > viewportH();
+				const maxScrollTop = (): number => Math.max(0, cachedLines.length - Math.max(1, viewportH() - 2));
+				const applyScroll = (top: number): void => {
+					if (!scrollable()) return;
+					const max = maxScrollTop();
+					scrollTop = Math.max(0, Math.min(max, top));
+					stickyBottom = scrollTop >= max;
+					tui.requestRender();
+				};
+				const scrollBy = (delta: number): void => applyScroll((stickyBottom ? maxScrollTop() : scrollTop) + delta);
+
 				return {
 					render(width: number): string[] {
 						if (width !== cachedWidth) {
 							cachedWidth = width;
 							cachedLines = wrapTextWithAnsi(renderReport(st, true), width);
 						}
-						return cachedLines;
+						const viewH = viewportH();
+						if (cachedLines.length <= viewH) return cachedLines;
+						const bodyH = Math.max(1, viewH - 2);
+						const max = maxScrollTop();
+						scrollTop = stickyBottom ? max : Math.max(0, Math.min(scrollTop, max));
+						stickyBottom = scrollTop >= max;
+						const out: string[] = [
+							st.dim(scrollTop > 0 ? `  ↑ ${scrollTop} line${scrollTop === 1 ? "" : "s"} above` : ""),
+						];
+						out.push(...cachedLines.slice(scrollTop, scrollTop + bodyH));
+						const below = cachedLines.length - scrollTop - bodyH;
+						out.push(st.dim(below > 0 ? `  ↓ ${below} line${below === 1 ? "" : "s"} below` : ""));
+						return out;
 					},
 					handleInput(data: string): void {
-						if (matchesKey(data, Key.escape) || data === "q") done();
-						else if (data === "r") {
+						if (matchesKey(data, Key.escape) || data === "q") {
+							done();
+							return;
+						}
+						if (data === "r") {
 							runAll();
 							refresh();
+							return;
 						}
+						const wheel = wheelRe.exec(data);
+						if (wheel) {
+							scrollBy(wheel[1] === "65" ? 3 : -3);
+							return;
+						}
+						const page = Math.max(1, viewportH() - 2);
+						const half = Math.max(1, Math.floor(viewportH() / 2));
+						if (matchesKey(data, Key.up) || data === "k") scrollBy(-1);
+						else if (matchesKey(data, Key.down) || data === "j") scrollBy(1);
+						else if (matchesKey(data, Key.pageUp)) scrollBy(-page);
+						else if (matchesKey(data, Key.pageDown)) scrollBy(page);
+						else if (matchesKey(data, Key.ctrl("u"))) scrollBy(-half);
+						else if (matchesKey(data, Key.ctrl("d"))) scrollBy(half);
+						else if (matchesKey(data, Key.home) || data === "g") applyScroll(0);
+						else if (matchesKey(data, Key.end) || data === "G") applyScroll(Number.MAX_SAFE_INTEGER);
 					},
 					invalidate(): void {
 						cachedWidth = 0;
 					},
 				};
+			};
+
+			await ctx.ui.custom<void>(tuiFactory, {
+				overlay: true,
+				overlayOptions: { width: "100%", maxHeight: "100%" },
 			});
 		},
 	});
