@@ -31,8 +31,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           # npm Trusted Publishing requires Node >=22.14 and npm >=11.5.1.
+          # No registry-url: it would write an _authToken line into .npmrc,
+          # which makes npm use that (unset/invalid) classic token instead
+          # of the OIDC exchange — every publish then fails with E404.
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - name: Publish changed packages
         run: |
