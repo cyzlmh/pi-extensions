@@ -37,6 +37,7 @@ jobs:
       - name: Publish changed packages
         run: |
           set -euo pipefail
+          failures=""
           for pkg in */package.json; do
             dir=$(dirname "$pkg")
             name=$(node -p "require('./$pkg').name")
@@ -51,5 +52,12 @@ jobs:
               continue
             fi
             echo "publishing $name@$version"
-            (cd "$dir" && npm publish --access public)
+            if ! (cd "$dir" && npm publish --access public); then
+              echo "::warning::publish failed for $name@$version"
+              failures="$failures\n  $name@$version"
+            fi
           done
+          if [ -n "$failures" ]; then
+            echo "::error::publish failed for:$failures"
+            exit 1
+          fi
