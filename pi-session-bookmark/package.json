@@ -1,0 +1,36 @@
+{
+	"name": "pi-session-bookmark",
+	"version": "0.1.0",
+	"description": "Browser-style session bookmarks for pi — /bookmarks, /bookmark-add, /bookmark-remove",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-coding-agent",
+		"bookmark",
+		"bookmarks",
+		"session",
+		"favorites",
+		"resume"
+	],
+	"license": "MIT",
+	"author": "yzchen",
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/cyzlmh/pi-extensions.git",
+		"directory": "pi-session-bookmark"
+	},
+	"bugs": {
+		"url": "https://github.com/cyzlmh/pi-extensions/issues"
+	},
+	"homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-session-bookmark"
+}

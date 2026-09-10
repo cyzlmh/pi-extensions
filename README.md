@@ -5,6 +5,7 @@ My collection of extensions for [pi](https://github.com/earendil-works/pi), the 
 | Package | npm | Description |
 |---|---|---|
 | [`pi-bg-tasks`](pi-bg-tasks/) | [![npm](https://img.shields.io/npm/v/pi-bg-tasks)](https://www.npmjs.com/package/pi-bg-tasks) | Lightweight background bash tasks — `run_in_background`, auto-background at timeout, Ctrl+Shift+B, completion notifications |
+| [`pi-session-bookmark`](pi-session-bookmark/) | [![npm](https://img.shields.io/npm/v/pi-session-bookmark)](https://www.npmjs.com/package/pi-session-bookmark) | Browser-style session bookmarks — `/bookmark-add`, `/bookmarks` picker with resume, `/bookmark-remove` (idempotent) |
 | [`pi-boundary-boost`](pi-boundary-boost/) | [![npm](https://img.shields.io/npm/v/pi-boundary-boost)](https://www.npmjs.com/package/pi-boundary-boost) | Rank direct directory children first in `@` file completion, so deep fuzzy matches never crowd out the obvious hit |
 | [`pi-dev-inspector`](pi-dev-inspector/) | [![npm](https://img.shields.io/npm/v/pi-dev-inspector)](https://www.npmjs.com/package/pi-dev-inspector) | Developer inspection tools — view the full system prompt and inspect API request/response round-trips |
 | [`pi-fork-pane`](pi-fork-pane/) | [![npm](https://img.shields.io/npm/v/pi-fork-pane)](https://www.npmjs.com/package/pi-fork-pane) | Split a tmux pane and fork the current pi session into it |
