@@ -43,6 +43,7 @@ import {
     requireExistingCwd,
     startBackgroundJob,
 } from "./lifecycle.ts";
+import { unwrapSandboxCommand } from "./unwrap.ts";
 
 /** UI context + cwd is all this tool needs from the host context. */
 type BashCtx = UiContext & { cwd: string };
@@ -113,11 +114,17 @@ export function registerBashTool(
             requireExistingCwd(bashCtx.cwd);
             assertJobSlot(reg);
 
+            // The sandbox extension may have wrapped the command (tool_call
+            // input mutation). Spawn the wrapped form, but store/display the
+            // original so notifications and bg_list stay readable.
+            const displayCommand = unwrapSandboxCommand(p.command);
+
             // Explicit background mode — spawn and return immediately.
             if (p.run_in_background) {
                 return spawnBackground({
                     toolCallId,
                     command: p.command,
+                    displayCommand,
                     name: p.description,
                     cwd: bashCtx.cwd,
                     reg,
@@ -130,6 +137,7 @@ export function registerBashTool(
             return runForeground({
                 toolCallId,
                 command: p.command,
+                displayCommand,
                 timeoutMs: p.timeout ? p.timeout * 1000 : DEFAULT_TIMEOUT_MS,
                 signal,
                 onUpdate,
@@ -146,6 +154,7 @@ export function registerBashTool(
 async function runForeground(args: {
     toolCallId: string;
     command: string;
+    displayCommand?: string;
     timeoutMs: number;
     signal: AbortSignal | undefined;
     onUpdate: AgentToolUpdateCallback<undefined> | undefined;
@@ -153,7 +162,7 @@ async function runForeground(args: {
     reg: BgRegistry;
     pi: Pick<ExtensionAPI, "sendMessage">;
 }): Promise<AgentToolResult<undefined>> {
-    const { toolCallId, command, timeoutMs, signal, onUpdate, ctx, reg, pi } = args;
+    const { toolCallId, command, displayCommand, timeoutMs, signal, onUpdate, ctx, reg, pi } = args;
     const id = newJobId(reg);
     const logPath = logPathFor(id);
 
@@ -190,7 +199,7 @@ async function runForeground(args: {
 
     const job = createRunningJob({
         id,
-        command,
+        command: displayCommand ?? command,
         pid: spawned.pid,
         logPath,
         toolCallId,
@@ -299,6 +308,7 @@ async function runForeground(args: {
 function spawnBackground(args: {
     toolCallId: string;
     command: string;
+    displayCommand?: string;
     name?: string;
     cwd: string;
     reg: BgRegistry;
@@ -319,7 +329,7 @@ function spawnBackground(args: {
     const job = createRunningJob({
         id,
         name: args.name,
-        command: args.command,
+        command: args.displayCommand ?? args.command,
         pid: spawned.pid,
         logPath,
         toolCallId: args.toolCallId,
