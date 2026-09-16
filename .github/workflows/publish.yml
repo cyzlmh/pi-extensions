@@ -54,7 +54,7 @@ jobs:
               continue
             fi
             echo "publishing $name@$version"
-            if ! (cd "$dir" && npm publish --access public); then
+            if ! (cd "$dir" && npm publish --access public --loglevel verbose); then
               echo "::warning::publish failed for $name@$version"
               failures="$failures\n  $name@$version"
             fi
