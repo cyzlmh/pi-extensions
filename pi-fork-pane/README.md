@@ -25,7 +25,11 @@ The fork is a full copy of the session file (same as `pi --fork <file>` / `/clon
 
 The new pane gets a fresh session file containing the path from the root to the selected entry, so you can branch off an earlier point of the conversation side-by-side.
 
-The new pane inherits the current working directory, so the fork lands in the same project.
+### Inherited configuration
+
+Both commands run the new pane with the current working directory and the startup CLI flags of this pi process (`--model`, `--provider`, `--thinking`, `--tools`, `-e`, `--session-dir`, `--no-sandbox`, …), so the fork runs with the same configuration it was started with — including flags registered by extensions. Flags that select or name a session (`--session`, `--fork`, `--name`, `-c`, `-r`) and one-shot actions (`-p`, `--version`, `--list-models`, …) are not forwarded, and neither is an initial prompt passed on the command line.
+
+Settings files (`~/.pi/agent/settings.json`, project settings, `AGENTS.md`) are re-read by the forked pi automatically; only CLI flags needed explicit forwarding. Environment variables are subject to tmux's own environment handling for new panes — an API key exported only in the current shell after the tmux server started may not be visible in the new pane.
 
 ## Requirements
 
