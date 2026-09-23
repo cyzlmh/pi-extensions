@@ -76,7 +76,8 @@ Merged from `~/.pi/agent/extensions/msb.json` (global) and `<project>/.pi/msb.js
   "warmup": true,           // bootstrap at session start instead of first bash call
   "syncIn": true,           // host→VM delta sync before each command
   "syncOut": true,          // VM→host delta sync after each command
-  "syncExcludes": [".git", "node_modules", "dist", "build"]
+  "syncExcludes": [".git", "node_modules", "dist", "build"],
+  "debug": false            // trace the wrapper: heartbeat + /tmp/msb-wrapper-trace.log
 }
 ```
 

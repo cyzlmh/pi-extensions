@@ -671,7 +671,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const sub = args.trim().toLowerCase();
 			if (!cfg.enabled) {
-				ctx.ui.notify("pi-msb-sandbox: disabled in config — bash runs on the host.", "warn");
+				ctx.ui.notify("pi-msb-sandbox: disabled in config — bash runs on the host.", "warning");
 				return;
 			}
 			if (!bin) await resolveBin();
@@ -706,7 +706,7 @@ export default function (pi: ExtensionAPI) {
 				`sync:       in=${cfg.syncIn ? "on" : "off"} out=${cfg.syncOut ? "on" : "off"} (deletions never sync)`,
 				`excludes:   ${cfg.syncExcludes.join(", ")}`,
 			];
-			ctx.ui.notify(lines.join("\n"), reachable ? "info" : "warn");
+			ctx.ui.notify(lines.join("\n"), reachable ? "info" : "warning");
 		},
 	});
 }
