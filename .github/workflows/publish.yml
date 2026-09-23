@@ -7,6 +7,9 @@
 # Uses npm Trusted Publishing (GitHub Actions OIDC): no NPM_TOKEN or OTP.
 # Each npm package must once be bound to cyzlmh/pi-extensions / publish.yml
 # in its npm Trusted Publisher settings (or with `npm trust github`).
+# An unbound package fails the OIDC exchange with a misleading
+# "package not found" — bind it (npmjs.com → package Settings → Trusted
+# Publisher) or publish that one manually.
 
 name: publish
 
@@ -39,7 +42,9 @@ jobs:
       - name: Publish changed packages
         run: |
           set -euo pipefail
-          failures=""
+          # Best effort: keep going past a failure, report each one, and only
+          # fail the run at the end.
+          failed=0
           for pkg in */package.json; do
             dir=$(dirname "$pkg")
             name=$(node -p "require('./$pkg').name")
@@ -54,12 +59,9 @@ jobs:
               continue
             fi
             echo "publishing $name@$version"
-            if ! (cd "$dir" && npm publish --access public --loglevel verbose); then
-              echo "::warning::publish failed for $name@$version"
-              failures="$failures\n  $name@$version"
+            if ! (cd "$dir" && npm publish --access public); then
+              echo "::error::$name@$version failed to publish"
+              failed=1
             fi
           done
-          if [ -n "$failures" ]; then
-            echo "::error::publish failed for:$failures"
-            exit 1
-          fi
+          exit $failed
