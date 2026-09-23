@@ -49,7 +49,7 @@ Pi's fullscreen TUI mode routes normalized pointer events to the overlay; regula
 - **Turn-grouped records** — user / assistant / tool / compaction, one dense line each
 - **Provider/model/stop metadata and complete persisted usage/cost breakdowns** in the inspector
 - **Live-only TTFT vs decode timing** on assistant rows when observed live; history never invents these metrics
-- **Timeline strip** — four lanes (user/assistant/tool/event) on a dsh-style idle-compressed axis. The event lane shows compaction and session markers (model/thinking/branch/bash/custom/unknown); `+` means multiple events share one time bucket. Historical assistant spans are explicitly estimated persisted-entry windows, while the TTFT/decode color split is live-only
+- **Timeline strip** — four lanes (user/assistant/tool/event) on a dsh-style idle-compressed axis. The event lane shows compaction and session markers (model/thinking/branch/bash/custom/context-edit/unknown); `+` means multiple events share one time bucket. Historical assistant spans are explicitly estimated persisted-entry windows, while the TTFT/decode color split is live-only
 - **Live indicators** — spinner on streaming assistant messages and running tools; tail-follow with a `↓ N new` hint when you scroll up
 - **Structured inspector** — an overview followed by clearly separated model/timing/usage/content/tool-result sections; `r` reveals sanitized raw source JSON when needed
 

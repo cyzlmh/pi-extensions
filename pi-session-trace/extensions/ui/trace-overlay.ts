@@ -923,6 +923,8 @@ function timelineEventStyle(r: TrajectoryRecord): { glyph: string; color: Parame
 					return { glyph: "T", color: "thinkingLow", priority: 5 };
 				case "branch":
 					return { glyph: "↗", color: "syntaxKeyword", priority: 4 };
+				case "context_edit":
+					return { glyph: "✎", color: "syntaxKeyword", priority: 4 };
 				case "bash":
 					return { glyph: "$", color: "syntaxString", priority: 3 };
 				case "custom":

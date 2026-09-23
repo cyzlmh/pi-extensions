@@ -236,6 +236,43 @@ export class EntryConverter {
 					inspector,
 				});
 				break;
+			case "context_edit": {
+				// Pi 0.87+: append-only edit to an earlier entry's model-visible content.
+				// replacement === null omits the target from provider context; a value
+				// replaces only its content. Raw history is untouched, so the edit is
+				// recorded as its own marker — like compaction/branch markers — and the
+				// inspector's raw JSON view still shows the untouched original.
+				const target = stringOrUndefined(entry.targetId) ?? "?";
+				const short = target.length > 8 ? `${target.slice(0, 8)}…` : target;
+				const replacement = entry.replacement;
+				if (replacement === null) {
+					out.push({
+						kind: "marker",
+						id,
+						entryId,
+						ts,
+						turn: this.turn,
+						marker: "context_edit",
+						text: `context edit · omit ${short} from model context`,
+						detail: `target entry: ${target}\nreplacement: null — the target is omitted from future provider requests`,
+						inspector,
+					});
+				} else {
+					const content = replacement?.content;
+					out.push({
+						kind: "marker",
+						id,
+						entryId,
+						ts,
+						turn: this.turn,
+						marker: "context_edit",
+						text: `context edit · replace content of ${short}`,
+						detail: [`target entry: ${target}`, oneLine(extractText(content), 160) || undefined].filter(Boolean).join("\n"),
+						inspector,
+					});
+				}
+				break;
+			}
 			case "custom":
 				out.push({
 					kind: "marker",

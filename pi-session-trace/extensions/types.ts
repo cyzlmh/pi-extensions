@@ -39,7 +39,7 @@ export interface InspectorSource {
 	rawMessage?: unknown;
 }
 
-export type MarkerKind = "model_change" | "thinking_change" | "branch" | "bash" | "custom" | "unknown" | "note";
+export type MarkerKind = "model_change" | "thinking_change" | "branch" | "bash" | "custom" | "unknown" | "note" | "context_edit";
 
 export interface BaseRecord {
 	/** Stable record id (session entry id plus a suffix for derived tool rows, or generated live id). */
