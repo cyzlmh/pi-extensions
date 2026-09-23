@@ -14,6 +14,7 @@ My collection of extensions for [pi](https://github.com/earendil-works/pi), the 
 | [`pi-provider-status`](pi-provider-status/) | [![npm](https://img.shields.io/npm/v/pi-provider-status)](https://www.npmjs.com/package/pi-provider-status) | `/status` panel showing remaining quota / balance for your configured providers — Kimi Coding, Zhipu ZAI, MiniMax, DeepSeek, OpenRouter, Claude & Codex subscription windows |
 | [`pi-zcode-headers`](pi-zcode-headers/) | [![npm](https://img.shields.io/npm/v/pi-zcode-headers)](https://www.npmjs.com/package/pi-zcode-headers) | Injects ZCode identity headers so the Zhipu backend treats pi traffic as official ZCode traffic |
 | [`pi-session-trace`](pi-session-trace/) | [![npm](https://img.shields.io/npm/v/pi-session-trace)](https://www.npmjs.com/package/pi-session-trace) | Pure-TUI session trajectory viewer — full-screen dsh-style live trace of the current session (TTFT/decode timeline, idle-compressed lanes); no server or browser |
+| [`pi-working-status`](pi-working-status/) | [![npm](https://img.shields.io/npm/v/pi-working-status)](https://www.npmjs.com/package/pi-working-status) | Replace pi's generic `Working` row with a live phase line — waiting/thinking/writing/calling/tool timers, measured character counts, and quiet detection |
 
 ## Install
 

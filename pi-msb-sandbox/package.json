@@ -1,6 +1,6 @@
 {
 	"name": "pi-msb-sandbox",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Run agent bash commands inside a libkrun microVM (microsandbox) with two-way workspace sync — fail-closed isolation for pi",
 	"keywords": [
 		"pi-package",

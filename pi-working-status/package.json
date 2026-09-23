@@ -1,0 +1,36 @@
+{
+	"name": "pi-working-status",
+	"version": "0.1.0",
+	"description": "Replace pi's generic Working row with a live phase line — waiting/thinking/writing/calling/tool with measured timers, character counts, and quiet detection",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi",
+		"pi-coding-agent",
+		"status",
+		"working",
+		"progress",
+		"ttft",
+		"streaming"
+	],
+	"license": "MIT",
+	"author": "cyzlmh",
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/cyzlmh/pi-extensions.git",
+		"directory": "pi-working-status"
+	},
+	"bugs": {
+		"url": "https://github.com/cyzlmh/pi-extensions/issues"
+	},
+	"homepage": "https://github.com/cyzlmh/pi-extensions/tree/main/pi-working-status"
+}
