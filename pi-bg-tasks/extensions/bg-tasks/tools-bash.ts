@@ -94,8 +94,7 @@ export function registerBashTool(
         name: "bash",
         description:
             "Run a bash command. Long-running commands auto-background after the timeout. " +
-            "Set run_in_background=true to start in the background immediately. " +
-            "Use Ctrl+Shift+B or /bg to manually background a running command.",
+            "Set run_in_background=true to start in the background immediately.",
         promptSnippet:
             "Run shell commands; long-running commands auto-background, or use run_in_background=true",
         promptGuidelines: [

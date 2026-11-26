@@ -31,6 +31,7 @@ function liveMarkedProcesses(): number {
 
 interface CapturedTool {
     name: string;
+    description?: string;
     execute: (
         toolCallId: string,
         params: unknown,
@@ -99,6 +100,18 @@ void describe("registration surface", () => {
         assert.ok(h.renderers.has(EVENT.taskNotification));
         assert.ok(h.handlers.has("session_start"));
         assert.ok(h.handlers.has("session_shutdown"));
+    });
+});
+
+void describe("bash tool description", () => {
+    void it("keeps background semantics without user-only shortcut/command hints", () => {
+        const h = startExtension();
+        const desc = h.tools.get("bash")!.description;
+        assert.ok(desc, "bash tool has a description");
+        assert.doesNotMatch(desc, /ctrl\+shift\+b/i, "no user-only keyboard shortcut");
+        assert.doesNotMatch(desc, /\/bg\b/, "no user-only command");
+        assert.match(desc, /auto-background after the timeout/);
+        assert.match(desc, /run_in_background=true/);
     });
 });
 
